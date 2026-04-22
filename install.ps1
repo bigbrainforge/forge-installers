@@ -155,19 +155,47 @@ function Add-NpmrcLine([string]$Line) {
 # Stores the secret in Windows Credential Manager without requiring the
 # CredentialManager PowerShell module (which needs Install-Module and may be
 # blocked by corp policy).
-Add-Type -TypeDefinition @'
+# PowerShell 7+ on .NET Core does NOT reference every System.* assembly by
+# default when Add-Type compiles inline C#. Two specific references bit the
+# previous version of this block on PS 7.6 (.NET 9):
+#
+#   1. `System.Runtime.InteropServices.ComTypes.FILETIME` — type-forwarded
+#      in newer .NET; Roslyn in-process compile refuses it without an
+#      explicit reference. We avoid the issue by inlining a private FILETIME
+#      layout (two UInt32s — it's only there to consume layout bytes).
+#   2. `System.ComponentModel.Win32Exception` — lives in
+#      System.ComponentModel.Primitives which isn't in the Add-Type default
+#      reference set. We throw a plain InvalidOperationException with the
+#      Win32 error code instead.
+#
+# Both changes are semantic no-ops for the caller (the FILETIME field is
+# never read; the thrown exception's message still contains the Win32 code).
+#
+# We guard Add-Type with a type-existence check so re-running install.ps1 in
+# the same PowerShell session doesn't hit "type already defined" errors, and
+# we use -ErrorAction Stop so a *real* compilation failure surfaces loudly
+# with the CS#### diagnostic instead of silently moving on to the next step
+# (which would then fail with a confusing "[Credman] is not a type" error).
+if (-not ('Credman' -as [type])) {
+    Add-Type -TypeDefinition @'
 using System;
 using System.Runtime.InteropServices;
 using System.Text;
 
 public static class Credman {
+    [StructLayout(LayoutKind.Sequential)]
+    private struct FILETIME {
+        public uint dwLowDateTime;
+        public uint dwHighDateTime;
+    }
+
     [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
     private struct CREDENTIAL {
         public UInt32 Flags;
         public UInt32 Type;
         [MarshalAs(UnmanagedType.LPWStr)] public string TargetName;
         [MarshalAs(UnmanagedType.LPWStr)] public string Comment;
-        public System.Runtime.InteropServices.ComTypes.FILETIME LastWritten;
+        public FILETIME LastWritten;
         public UInt32 CredentialBlobSize;
         public IntPtr CredentialBlob;
         public UInt32 Persist;
@@ -213,12 +241,14 @@ public static class Credman {
                 UserName = "forge"
             };
             if (!CredWrite(ref c, 0)) {
-                throw new System.ComponentModel.Win32Exception(Marshal.GetLastWin32Error());
+                throw new InvalidOperationException(
+                    "CredWrite failed (Win32 error " + Marshal.GetLastWin32Error() + ")");
             }
         } finally { Marshal.FreeCoTaskMem(ptr); }
     }
 }
-'@ -ErrorAction SilentlyContinue
+'@ -ErrorAction Stop
+}
 
 # ── store_token_in_credman helper ────────────────────────────────────────────
 # Reused for both FORGE_PACKAGE_TOKEN (step 3) and FORGE_ACCESS_TOKEN (step 6).
@@ -335,6 +365,11 @@ else {
     # lines in $PROFILE can then call [Credman]::Read to populate env vars.
     $credmanGuard = '# forge credman helper'
     if (-not (Select-String -Path $PROFILE -Pattern $credmanGuard -SimpleMatch -Quiet -ErrorAction SilentlyContinue)) {
+        # The $PROFILE-injected helper MUST mirror the installer's own Credman
+        # source exactly — same FILETIME inlining + same reference avoidance —
+        # otherwise a fresh shell that sources $PROFILE on startup will hit the
+        # same CS#### compile errors under PS 7+ / .NET 9 that the installer
+        # fixed for its own Add-Type call.
         $credmanSource = @'
 # forge credman helper
 if (-not ('Credman' -as [type])) {
@@ -343,13 +378,18 @@ using System;
 using System.Runtime.InteropServices;
 using System.Text;
 public static class Credman {
+    [StructLayout(LayoutKind.Sequential)]
+    private struct FILETIME {
+        public uint dwLowDateTime;
+        public uint dwHighDateTime;
+    }
     [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
     private struct CREDENTIAL {
         public UInt32 Flags;
         public UInt32 Type;
         [MarshalAs(UnmanagedType.LPWStr)] public string TargetName;
         [MarshalAs(UnmanagedType.LPWStr)] public string Comment;
-        public System.Runtime.InteropServices.ComTypes.FILETIME LastWritten;
+        public FILETIME LastWritten;
         public UInt32 CredentialBlobSize;
         public IntPtr CredentialBlob;
         public UInt32 Persist;
