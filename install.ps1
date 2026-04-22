@@ -438,6 +438,44 @@ Add-NpmrcLine 'always-auth=true'
 # ── Step 5: npm install ──────────────────────────────────────────────────────
 
 Write-Step "Step 5 — install $PackageName"
+
+# Cleanup prior installs that collide on the `forge-plugin` bin name.
+#
+# Two scenarios we defend against:
+#   1. The client previously installed the deprecated public `forge-plugin@*`
+#      package from npmjs.com (pre-PR #230). That package declares
+#      `"bin": { "forge-plugin": ... }` identical to the new
+#      `@bigbrainforge/forge-plugin`, so npm refuses with EEXIST when it
+#      tries to write the new shim over the old one.
+#   2. A prior run of this installer crashed mid-install (see the
+#      forge-v0.5.25 Credman bug) and left a partial `@bigbrainforge/forge-plugin`
+#      global install with bin shims but inconsistent metadata — npm treats
+#      that as EEXIST too.
+#
+# Both `npm uninstall -g` calls are idempotent: they print a warning and
+# exit 0 if the package isn't installed, which is exactly what we want.
+# We still sweep the bare bin shim as a belt-and-suspenders fallback for
+# the case where uninstall leaves the shim behind (observed when the
+# package's lib dir was manually removed before uninstall ran).
+Write-InfoMsg 'Removing any stale forge-plugin shims from prior installs...'
+& npm uninstall -g forge-plugin --silent 2>$null | Out-Null
+& npm uninstall -g $PackageName --silent 2>$null | Out-Null
+
+$npmPrefix = (& npm config get prefix 2>$null).Trim()
+if ($npmPrefix) {
+    foreach ($leaf in @('forge-plugin', 'forge-plugin.cmd', 'forge-plugin.ps1')) {
+        $stale = Join-Path $npmPrefix $leaf
+        if (Test-Path -LiteralPath $stale) {
+            try {
+                Remove-Item -LiteralPath $stale -Force -ErrorAction Stop
+                Write-InfoMsg "removed stale shim: $stale"
+            } catch {
+                Write-WarnMsg "could not remove $stale — npm install may fail with EEXIST: $($_.Exception.Message)"
+            }
+        }
+    }
+}
+
 & npm install -g $PackageName --no-audit --no-fund
 if ($LASTEXITCODE -ne 0) { Die 'npm install failed — see output above' }
 Write-Ok "installed $PackageName"

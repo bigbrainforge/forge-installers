@@ -356,6 +356,29 @@ append_if_missing "always-auth=true" "$NPMRC"
 # ── Step 5: npm install ──────────────────────────────────────────────────────
 
 step "Step 5 — install ${PACKAGE_NAME}"
+
+# Cleanup prior installs that collide on the `forge-plugin` bin name.
+# See the install.ps1 counterpart for the full rationale — same two
+# scenarios (deprecated public forge-plugin@* from pre-PR #230, or a
+# partial install from an earlier crashed run) also hit Unix hosts.
+# Both uninstall calls are idempotent.
+info "Removing any stale forge-plugin shims from prior installs..."
+npm uninstall -g forge-plugin --silent >/dev/null 2>&1 || true
+npm uninstall -g "$PACKAGE_NAME" --silent >/dev/null 2>&1 || true
+
+npm_prefix=$(npm config get prefix 2>/dev/null || echo "")
+if [ -n "$npm_prefix" ]; then
+  for shim in "$npm_prefix/bin/forge-plugin" "$npm_prefix/forge-plugin"; do
+    if [ -e "$shim" ] || [ -L "$shim" ]; then
+      if rm -f "$shim" 2>/dev/null; then
+        info "removed stale shim: $shim"
+      else
+        warn "could not remove $shim — npm install may fail with EEXIST"
+      fi
+    fi
+  done
+fi
+
 npm install -g "$PACKAGE_NAME" --no-audit --no-fund
 ok "installed ${PACKAGE_NAME}"
 
