@@ -176,13 +176,13 @@ function Add-NpmrcLine([string]$Line) {
 # we use -ErrorAction Stop so a *real* compilation failure surfaces loudly
 # with the CS#### diagnostic instead of silently moving on to the next step
 # (which would then fail with a confusing "[Credman] is not a type" error).
-if (-not ('Credman' -as [type])) {
+if (-not ('CredmanV2' -as [type])) {
     Add-Type -TypeDefinition @'
 using System;
 using System.Runtime.InteropServices;
 using System.Text;
 
-public static class Credman {
+public static class CredmanV2 {
     [StructLayout(LayoutKind.Sequential)]
     private struct FILETIME {
         public uint dwLowDateTime;
@@ -257,7 +257,7 @@ public static class Credman {
 # credential if it already exists.
 
 function Install-TokenInCredman([string]$VarName, [string]$Label) {
-    $existing = [Credman]::Read($VarName)
+    $existing = [CredmanV2]::Read($VarName)
     if ($existing) {
         Write-InfoMsg "$VarName already in Credential Manager — reusing"
     } else {
@@ -267,12 +267,12 @@ function Install-TokenInCredman([string]$VarName, [string]$Label) {
         $plain = [System.Runtime.InteropServices.Marshal]::PtrToStringBSTR($bstr)
         [System.Runtime.InteropServices.Marshal]::ZeroFreeBSTR($bstr)
         if (-not $plain) { Die "empty $VarName" }
-        [Credman]::Write($VarName, $plain)
+        [CredmanV2]::Write($VarName, $plain)
         Write-Ok "stored in Credential Manager under '$VarName'"
         $plain = $null
     }
-    Add-ProfileLine "`$env:$VarName = [Credman]::Read('$VarName')"
-    Set-Item -Path "Env:$VarName" -Value ([Credman]::Read($VarName))
+    Add-ProfileLine "`$env:$VarName = [CredmanV2]::Read('$VarName')"
+    Set-Item -Path "Env:$VarName" -Value ([CredmanV2]::Read($VarName))
 }
 
 function Install-TokenInGcp([string]$VarName, [string]$GcpSecret) {
@@ -360,24 +360,98 @@ if ($Secrets -eq 'gcp') {
     Install-TokenInGcp $PatVar $GcpPackageSecret
 }
 else {
-    # Inject the Credman type definition into $PROFILE once, guarded so we
-    # only compile it per shell session (not per Add-Type call). Subsequent
-    # lines in $PROFILE can then call [Credman]::Read to populate env vars.
-    $credmanGuard = '# forge credman helper'
+    # Migration (forge-v0.5.28): earlier installer versions (<=0.5.27) emitted
+    # a `# forge credman helper` block defining a type named `Credman` that
+    # was either Read-only or shape-drifted from the installer's. When a
+    # client upgraded, fresh PowerShell sessions loaded the Read-only
+    # `Credman` from $PROFILE, the installer's re-run saw the type already
+    # existed, skipped its own `Add-Type`, and then `[Credman]::Write` hit
+    # "Method ... does not contain a method named 'Write'". The fix is a
+    # clean rename: the installer and the new $PROFILE block both use
+    # `CredmanV2`, which can't collide with the legacy type in an already-
+    # loaded AppDomain. This migration strips the stale v1 block and its
+    # stale `[Credman]::Read(...)` per-var lines from $PROFILE so future
+    # fresh shells don't keep resurrecting the defunct type.
+    if (Test-Path $PROFILE) {
+        $profileLines = Get-Content -Path $PROFILE -ErrorAction SilentlyContinue
+        if ($profileLines) {
+            # Three-state parser: we're either 'normal', inside the legacy
+            # helper block (between `# forge credman helper` and `"@`), or
+            # waiting for the single line after `"@` that closes the outer
+            # if-guard. We anchor on the here-string terminator rather than
+            # counting `}` lines because the Credman C# inside the block
+            # contains its own method/class braces that would otherwise
+            # fool any depth-counting approach.
+            $newLines = @()
+            $state = 'normal'
+            foreach ($line in $profileLines) {
+                if ($state -eq 'normal') {
+                    if ($line -match '^#\s*forge credman helper\s*$') {
+                        # Enter legacy helper block — skip lines until the
+                        # here-string terminator.
+                        $state = 'inBlock'
+                    }
+                    elseif ($line -match '\[Credman\]::Read\(') {
+                        # Drop stale per-var line referencing the v1
+                        # `Credman` type. New v2 lines use `CredmanV2`
+                        # (written below) and stay.
+                    }
+                    else {
+                        $newLines += $line
+                    }
+                }
+                elseif ($state -eq 'inBlock') {
+                    # Here-string terminator `"@ ...` marks the tail of
+                    # the legacy block; the next line is the outer `}`
+                    # closing the if-guard.
+                    if ($line -match '^"@') { $state = 'afterHereString' }
+                }
+                elseif ($state -eq 'afterHereString') {
+                    # Swallow exactly one more line (the outer `}`) then
+                    # return to normal parsing. If the legacy block was
+                    # malformed we may eat one extra line — acceptable
+                    # tradeoff vs. more brittle anchoring.
+                    $state = 'normal'
+                }
+            }
+            if ($newLines.Count -ne $profileLines.Count) {
+                Set-Content -Path $PROFILE -Value $newLines
+                Write-Ok "migrated $PROFILE — removed legacy Credman helper + stale [Credman]::Read lines"
+            }
+        }
+    }
+
+    # Inject the CredmanV2 type definition into $PROFILE once, guarded so
+    # we only compile it per shell session. Subsequent lines in $PROFILE
+    # can then call [CredmanV2]::Read to populate env vars.
+    $credmanGuard = '# forge credman helper v2'
     if (-not (Select-String -Path $PROFILE -Pattern $credmanGuard -SimpleMatch -Quiet -ErrorAction SilentlyContinue)) {
-        # The $PROFILE-injected helper MUST mirror the installer's own Credman
-        # source exactly — same FILETIME inlining + same reference avoidance —
-        # otherwise a fresh shell that sources $PROFILE on startup will hit the
-        # same CS#### compile errors under PS 7+ / .NET 9 that the installer
-        # fixed for its own Add-Type call.
+        # The $PROFILE-injected helper MUST mirror the installer's Credman
+        # source EXACTLY — same struct layout, same FILETIME inlining, same
+        # reference avoidance, AND same public method surface (Read + Write,
+        # not just Read). Two reasons:
+        #
+        #   1. Compile-time: a shell that sources $PROFILE on startup must
+        #      be able to compile the type under PS 7+ / .NET 9 without the
+        #      ComTypes.FILETIME type-forwarding failure.
+        #   2. Shape parity: if the helper defines a Read-only Credman, then
+        #      ANY subsequent `Add-Type` guarded by
+        #      `if (-not ('Credman' -as [type]))` will short-circuit — and
+        #      the caller hits "[Credman] does not contain a method named
+        #      'Write'" at the first Write. Observed on forge-v0.5.27 when
+        #      a client opened a fresh PS 7 window between runs.
+        #
+        # Keeping the two definitions byte-identical (modulo here-string
+        # escapes) avoids the class of bug entirely — any shell that loads
+        # one of them ends up with the full interface.
         $credmanSource = @'
-# forge credman helper
-if (-not ('Credman' -as [type])) {
+# forge credman helper v2
+if (-not ('CredmanV2' -as [type])) {
 Add-Type -TypeDefinition @"
 using System;
 using System.Runtime.InteropServices;
 using System.Text;
-public static class Credman {
+public static class CredmanV2 {
     [StructLayout(LayoutKind.Sequential)]
     private struct FILETIME {
         public uint dwLowDateTime;
@@ -400,6 +474,8 @@ public static class Credman {
     }
     [DllImport("advapi32.dll", EntryPoint = "CredReadW", CharSet = CharSet.Unicode, SetLastError = true)]
     private static extern bool CredRead(string target, UInt32 type, UInt32 reservedFlag, out IntPtr credentialPtr);
+    [DllImport("advapi32.dll", EntryPoint = "CredWriteW", CharSet = CharSet.Unicode, SetLastError = true)]
+    private static extern bool CredWrite([In] ref CREDENTIAL credential, UInt32 flags);
     [DllImport("advapi32.dll", SetLastError = true)]
     private static extern void CredFree(IntPtr cred);
     public static string Read(string target) {
@@ -412,6 +488,26 @@ public static class Credman {
             Marshal.Copy(c.CredentialBlob, bytes, 0, (int)c.CredentialBlobSize);
             return Encoding.Unicode.GetString(bytes);
         } finally { CredFree(p); }
+    }
+    public static void Write(string target, string secret) {
+        var blob = Encoding.Unicode.GetBytes(secret);
+        var ptr = Marshal.AllocCoTaskMem(blob.Length);
+        try {
+            Marshal.Copy(blob, 0, ptr, blob.Length);
+            var c = new CREDENTIAL {
+                Flags = 0,
+                Type = 1,
+                TargetName = target,
+                CredentialBlobSize = (UInt32)blob.Length,
+                CredentialBlob = ptr,
+                Persist = 2,
+                UserName = "forge"
+            };
+            if (!CredWrite(ref c, 0)) {
+                throw new InvalidOperationException(
+                    "CredWrite failed (Win32 error " + Marshal.GetLastWin32Error() + ")");
+            }
+        } finally { Marshal.FreeCoTaskMem(ptr); }
     }
 }
 "@ -ErrorAction SilentlyContinue
