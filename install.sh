@@ -1,14 +1,19 @@
 #!/usr/bin/env bash
-# @bigbrainforge/forge — macOS / Linux installer.
+# @bigbrainforge/forge-plugin — macOS / Linux installer.
 #
-# One-command client install. Handles:
+# One-command client install for the Claude Code plugin. Handles:
 #   - nvm install (if missing) + Node 22 LTS
 #   - FORGE_PACKAGE_TOKEN storage (OS Keychain or GCP Secret Manager)
 #   - ~/.npmrc registry + auth config
-#   - npm install -g @bigbrainforge/forge
+#   - npm install -g @bigbrainforge/forge-plugin
 #   - FORGE_ACCESS_TOKEN storage (same secrets backend)
 #   - Shell profile wiring
-#   - Smoke test
+#   - forge-plugin run (copies slash commands + statusline into ~/.claude/)
+#   - Plugin-file verification
+#
+# The plugin is a standalone artifact — it runs against the deployed Forge
+# MCP server and does not require the `forge` CLI, codex, or shield to be
+# installed locally. Claude Code must already be installed.
 #
 # Usage:
 #   ./install.sh                                 # interactive, OS keystore
@@ -21,9 +26,9 @@
 
 set -euo pipefail
 
-SCRIPT_VERSION="0.1.0"
+SCRIPT_VERSION="0.2.0"
 NODE_MAJOR=22
-PACKAGE_NAME="@bigbrainforge/forge"
+PACKAGE_NAME="@bigbrainforge/forge-plugin"
 REGISTRY_URL="https://npm.pkg.github.com"
 REGISTRY_HOST="npm.pkg.github.com"
 GCP_PACKAGE_SECRET_DEFAULT="FORGE_PACKAGE_TOKEN"
@@ -37,13 +42,15 @@ SECRETS_BACKEND=""
 GCP_PROJECT=""
 GCP_PACKAGE_SECRET="$GCP_PACKAGE_SECRET_DEFAULT"
 GCP_ACCESS_SECRET="$GCP_ACCESS_SECRET_DEFAULT"
-SKIP_SMOKE_TEST=false
-SKIP_PLUGIN=false
+SKIP_VERIFY=false
 NON_INTERACTIVE=false
 
 usage() {
   cat <<EOF
-@bigbrainforge/forge installer (v${SCRIPT_VERSION})
+@bigbrainforge/forge-plugin installer (v${SCRIPT_VERSION})
+
+Installs the Forge Claude Code plugin. Assumes Claude Code is already
+installed and that a Forge MCP endpoint has been provisioned for you.
 
 Usage: $0 [options]
 
@@ -60,13 +67,12 @@ Options:
   --gcp-access-secret=NAME        Override the access-token secret name
                                   (default: ${GCP_ACCESS_SECRET_DEFAULT})
   --non-interactive               Never prompt — require all needed flags
-  --skip-smoke-test               Skip the final 'forge --version' verification
-  --skip-plugin                   Skip the Claude Code plugin install step
+  --skip-verify                   Skip the final plugin-file verification
   -h, --help                      Show this help
 
 For --secrets=gcp, pre-populate the two secrets in your GCP project:
   printf 'ghp_xxx'   | gcloud secrets create ${GCP_PACKAGE_SECRET_DEFAULT}  --data-file=- --project=PROJECT_ID
-  printf 'codex-xxx' | gcloud secrets create ${GCP_ACCESS_SECRET_DEFAULT} --data-file=- --project=PROJECT_ID
+  printf 'mcp-xxx'   | gcloud secrets create ${GCP_ACCESS_SECRET_DEFAULT} --data-file=- --project=PROJECT_ID
 EOF
 }
 
@@ -76,8 +82,7 @@ for arg in "$@"; do
     --gcp-project=*)      GCP_PROJECT="${arg#*=}";;
     --gcp-package-secret=*)   GCP_PACKAGE_SECRET="${arg#*=}";;
     --gcp-access-secret=*) GCP_ACCESS_SECRET="${arg#*=}";;
-    --skip-smoke-test)    SKIP_SMOKE_TEST=true;;
-    --skip-plugin)        SKIP_PLUGIN=true;;
+    --skip-verify)        SKIP_VERIFY=true;;
     --non-interactive)    NON_INTERACTIVE=true;;
     -h|--help)            usage; exit 0;;
     *)                    printf 'unknown arg: %s\n\n' "$arg" >&2; usage; exit 2;;
@@ -184,6 +189,77 @@ append_if_missing() {
   fi
 }
 
+# Store a token in the OS keystore (macOS Keychain or Linux libsecret) and
+# emit the profile line that reads it at shell startup. Reused for both
+# FORGE_PACKAGE_TOKEN (step 3) and FORGE_ACCESS_TOKEN (step 6).
+#
+# Args: $1 = env-var name (also the keystore target name)
+#       $2 = human-readable label for prompts
+#
+# Behavior:
+#   - If the env var is already populated in the current shell, skip prompt.
+#   - Else if the keystore already has the entry, reuse it silently.
+#   - Else prompt (no-echo), store, and emit profile line.
+#
+# Exports the env var into the current shell so downstream steps see the value.
+store_token_in_keystore() {
+  local var_name=$1 label=${2:-$1}
+  local val
+  val=$(printenv "$var_name" || true)
+  if [ -n "$val" ]; then
+    info "${var_name} already set in environment — skipping prompt"
+    return 0
+  fi
+
+  if have security; then
+    if security find-generic-password -s "$var_name" -a "$USER" -w >/dev/null 2>&1; then
+      info "${var_name} already in Keychain — reusing"
+    else
+      info "paste ${label} (input hidden; will be stored in Keychain):"
+      printf "  %s: " "$var_name"
+      stty -echo
+      IFS= read -r val
+      stty echo
+      printf '\n'
+      [ -n "$val" ] || die "empty ${var_name}"
+      security add-generic-password -U -s "$var_name" -a "$USER" -w "$val"
+      ok "stored in Keychain under '$var_name'"
+      unset val
+    fi
+    local line="export ${var_name}=\"\$(security find-generic-password -s '${var_name}' -a \"\$USER\" -w 2>/dev/null)\""
+    append_if_missing "$line" "$PROFILE"
+    export "${var_name}"="$(security find-generic-password -s "$var_name" -a "$USER" -w)"
+  elif have secret-tool; then
+    # Linux libsecret path
+    if ! secret-tool lookup service "$var_name" >/dev/null 2>&1; then
+      info "paste ${label} (input hidden):"
+      secret-tool store --label="${label}" service "$var_name"
+      ok "stored in libsecret keyring"
+    else
+      info "${var_name} already in libsecret — reusing"
+    fi
+    local line="export ${var_name}=\"\$(secret-tool lookup service ${var_name} 2>/dev/null)\""
+    append_if_missing "$line" "$PROFILE"
+    export "${var_name}"="$(secret-tool lookup service "$var_name")"
+  else
+    die "no keystore found (tried: security, secret-tool). Install one, or re-run with --secrets=gcp"
+  fi
+}
+
+# Emit the shell-profile line that reads a token from GCP Secret Manager at
+# shell startup, and populate the env var for the current session. Reused
+# for both tokens under --secrets=gcp.
+store_token_in_gcp() {
+  local var_name=$1 gcp_secret=$2
+  # Profile line: 2>/dev/null on the RHS lets a disconnected shell start
+  # without failure; npm install / plugin runtime will then fail with a
+  # clear auth error, which is better UX than the entire shell refusing
+  # to open.
+  local line="export ${var_name}=\"\$(gcloud secrets versions access latest --secret=${gcp_secret} --project=${GCP_PROJECT} 2>/dev/null)\""
+  append_if_missing "$line" "$PROFILE"
+  export "${var_name}"="$(gcloud secrets versions access latest --secret="$gcp_secret" --project="$GCP_PROJECT")"
+}
+
 # ── Step 1: Node 22 via nvm ──────────────────────────────────────────────────
 
 step "Step 1 — Node ${NODE_MAJOR} LTS"
@@ -237,9 +313,9 @@ if [ "$SECRETS_BACKEND" = "gcp" ]; then
     [ -z "$GCP_PROJECT" ] && die "GCP project ID is required under --secrets=gcp"
   fi
 
-  info "GCP project: ${GCP_PROJECT}"
-  info "Package secret:   ${GCP_PACKAGE_SECRET}"
-  info "Codex secret: ${GCP_ACCESS_SECRET}"
+  info "GCP project:   ${GCP_PROJECT}"
+  info "Package secret: ${GCP_PACKAGE_SECRET}"
+  info "Access secret:  ${GCP_ACCESS_SECRET}"
 
   # Probe existence of both secrets up front — fail fast if missing.
   for secret in "$GCP_PACKAGE_SECRET" "$GCP_ACCESS_SECRET"; do
@@ -250,8 +326,8 @@ if [ "$SECRETS_BACKEND" = "gcp" ]; then
     ok "secret '$secret' exists in $GCP_PROJECT"
   done
 else
-  if ! have security; then
-    warn "macOS 'security' command not found — falling back to plain env var (less secure)"
+  if ! have security && ! have secret-tool; then
+    die "no keystore found (tried: security, secret-tool). Install libsecret-tools or re-run with --secrets=gcp"
   fi
 fi
 
@@ -259,56 +335,14 @@ fi
 
 step "Step 3 — FORGE_PACKAGE_TOKEN → env var"
 
-PAT_VAR=FORGE_PACKAGE_TOKEN
-
 if [ "$SECRETS_BACKEND" = "gcp" ]; then
-  # Profile line that fetches from GCP on each shell startup.
-  # `2>/dev/null` on the RHS lets a disconnected shell start without failure;
-  # npm install will then fail with a clear auth error, which is better UX
-  # than the entire shell refusing to open.
-  line="export ${PAT_VAR}=\"\$(gcloud secrets versions access latest --secret=${GCP_PACKAGE_SECRET} --project=${GCP_PROJECT} 2>/dev/null)\""
-  append_if_missing "$line" "$PROFILE"
-  # Populate for the current install session.
-  export "${PAT_VAR}"="$(gcloud secrets versions access latest --secret="$GCP_PACKAGE_SECRET" --project="$GCP_PROJECT")"
+  store_token_in_gcp "FORGE_PACKAGE_TOKEN" "$GCP_PACKAGE_SECRET"
 else
-  # Keystore mode — prompt + store in Keychain (macOS) or libsecret (Linux).
-  if [ -n "${!PAT_VAR:-}" ]; then
-    info "${PAT_VAR} already set in environment — skipping prompt"
-  elif have security; then
-    if security find-generic-password -s "$PAT_VAR" -a "$USER" -w >/dev/null 2>&1; then
-      info "FORGE_PACKAGE_TOKEN already in Keychain — reusing"
-    else
-      info "paste FORGE_PACKAGE_TOKEN (input hidden; will be stored in Keychain):"
-      printf "  FORGE_PACKAGE_TOKEN: "
-      stty -echo
-      IFS= read -r pat
-      stty echo
-      printf '\n'
-      [ -n "$pat" ] || die "empty FORGE_PACKAGE_TOKEN"
-      security add-generic-password -U -s "$PAT_VAR" -a "$USER" -w "$pat"
-      ok "stored in Keychain under '$PAT_VAR'"
-      unset pat
-    fi
-    line="export ${PAT_VAR}=\"\$(security find-generic-password -s '${PAT_VAR}' -a \"\$USER\" -w 2>/dev/null)\""
-    append_if_missing "$line" "$PROFILE"
-    export "${PAT_VAR}"="$(security find-generic-password -s "$PAT_VAR" -a "$USER" -w)"
-  elif have secret-tool; then
-    # Linux libsecret path
-    if ! secret-tool lookup service "$PAT_VAR" >/dev/null 2>&1; then
-      info "paste FORGE_PACKAGE_TOKEN (input hidden):"
-      secret-tool store --label="FORGE_PACKAGE_TOKEN" service "$PAT_VAR"
-      ok "stored in libsecret keyring"
-    fi
-    line="export ${PAT_VAR}=\"\$(secret-tool lookup service ${PAT_VAR} 2>/dev/null)\""
-    append_if_missing "$line" "$PROFILE"
-    export "${PAT_VAR}"="$(secret-tool lookup service "$PAT_VAR")"
-  else
-    die "no keystore found (tried: security, secret-tool). Install one, or re-run with --secrets=gcp"
-  fi
+  store_token_in_keystore "FORGE_PACKAGE_TOKEN" "FORGE_PACKAGE_TOKEN (GitHub Packages read-access)"
 fi
 
-[ -n "${!PAT_VAR:-}" ] || die "${PAT_VAR} empty after setup — check keystore/GCP configuration"
-ok "${PAT_VAR} populated in current shell (length=${#FORGE_PACKAGE_TOKEN})"
+[ -n "${FORGE_PACKAGE_TOKEN:-}" ] || die "FORGE_PACKAGE_TOKEN empty after setup — check keystore/GCP configuration"
+ok "FORGE_PACKAGE_TOKEN populated in current shell (length=${#FORGE_PACKAGE_TOKEN})"
 
 # ── Step 4: ~/.npmrc ─────────────────────────────────────────────────────────
 
@@ -316,91 +350,73 @@ step "Step 4 — ~/.npmrc registry + auth"
 
 NPMRC="$HOME/.npmrc"
 append_if_missing "@bigbrainforge:registry=${REGISTRY_URL}" "$NPMRC"
-append_if_missing "//${REGISTRY_HOST}/:_authToken=\${${PAT_VAR}}" "$NPMRC"
+append_if_missing "//${REGISTRY_HOST}/:_authToken=\${FORGE_PACKAGE_TOKEN}" "$NPMRC"
 append_if_missing "always-auth=true" "$NPMRC"
 
 # ── Step 5: npm install ──────────────────────────────────────────────────────
 
 step "Step 5 — install ${PACKAGE_NAME}"
-info "(this downloads ~9 MB compressed + tree-sitter grammar prebuilds)"
 npm install -g "$PACKAGE_NAME" --no-audit --no-fund
-ok "installed $(npm ls -g --depth=0 "$PACKAGE_NAME" 2>/dev/null | grep forge-cli || echo "")"
+ok "installed ${PACKAGE_NAME}"
 
 # ── Step 6: FORGE_ACCESS_TOKEN ────────────────────────────────────────────────
 
 step "Step 6 — FORGE_ACCESS_TOKEN → env var"
 
-TOK_VAR=FORGE_ACCESS_TOKEN
-
 if [ "$SECRETS_BACKEND" = "gcp" ]; then
-  line="export ${TOK_VAR}=\"\$(gcloud secrets versions access latest --secret=${GCP_ACCESS_SECRET} --project=${GCP_PROJECT} 2>/dev/null)\""
-  append_if_missing "$line" "$PROFILE"
-  export "${TOK_VAR}"="$(gcloud secrets versions access latest --secret="$GCP_ACCESS_SECRET" --project="$GCP_PROJECT")"
+  store_token_in_gcp "FORGE_ACCESS_TOKEN" "$GCP_ACCESS_SECRET"
 else
-  # Delegate to shield's existing command, which already handles the prompt +
-  # Keychain + profile emission. Run it only if the token isn't already there.
-  if have security && security find-generic-password -s "$TOK_VAR" -a "$USER" -w >/dev/null 2>&1; then
-    info "token already in Keychain — reusing"
-    line="export ${TOK_VAR}=\"\$(security find-generic-password -s '${TOK_VAR}' -a \"\$USER\" -w 2>/dev/null)\""
-    append_if_missing "$line" "$PROFILE"
-    export "${TOK_VAR}"="$(security find-generic-password -s "$TOK_VAR" -a "$USER" -w)"
-  else
-    info "running 'forge shield fix shell-secret ${TOK_VAR}' (prompt follows)"
-    forge shield fix shell-secret "$TOK_VAR" || die "shield fix shell-secret failed"
-    # shield emits the profile line itself; we just need to make sure the
-    # current shell has the value for the smoke test.
-    if have security; then
-      export "${TOK_VAR}"="$(security find-generic-password -s "$TOK_VAR" -a "$USER" -w 2>/dev/null || echo '')"
-    fi
-  fi
+  store_token_in_keystore "FORGE_ACCESS_TOKEN" "FORGE_ACCESS_TOKEN (Forge MCP endpoint)"
 fi
 
-[ -n "${!TOK_VAR:-}" ] || warn "${TOK_VAR} not populated in this shell (will be in new shells after profile reload)"
+[ -n "${FORGE_ACCESS_TOKEN:-}" ] || warn "FORGE_ACCESS_TOKEN not populated in this shell (will be in new shells after profile reload)"
 
-# ── Step 7: install Claude Code plugin (slash commands + statusline) ─────────
+# ── Step 7: run forge-plugin ─────────────────────────────────────────────────
+# Copies slash commands, hooks, statusline, and utility scripts into
+# ~/.claude/. Also registers the MCP server with Claude Code's config.
 
 step "Step 7 — Claude Code plugin → ~/.claude/"
 
-if [ "${SKIP_PLUGIN:-false}" = "true" ]; then
-  info "skipped (--skip-plugin)"
+if have forge-plugin; then
+  forge-plugin || die "forge-plugin install exited with non-zero status"
+  ok "plugin installed to ~/.claude/"
 else
-  # forge-plugin ships bundled inside @bigbrainforge/forge. Running the
-  # published `forge-plugin` bin copies slash commands + statusline hook
-  # into ~/.claude/. Safe to re-run (installer is idempotent).
-  if have forge-plugin; then
-    forge-plugin || warn "forge-plugin install exited with non-zero status"
-    ok "plugin installed to ~/.claude/"
-  else
-    warn "forge-plugin binary not on PATH. Run manually: forge-plugin"
-  fi
+  die "forge-plugin binary not on PATH after npm install. Check: npm config get prefix"
 fi
 
-# ── Step 8: smoke test ───────────────────────────────────────────────────────
+# ── Step 8: verify plugin files ──────────────────────────────────────────────
 
-if [ "$SKIP_SMOKE_TEST" = "true" ]; then
-  step "Step 8 — smoke test (skipped by flag)"
+if [ "$SKIP_VERIFY" = "true" ]; then
+  step "Step 8 — verify (skipped by flag)"
 else
-  step "Step 8 — smoke test"
-  forge --version || die "forge --version failed — install did not succeed"
-  ok "forge $(forge --version) is on PATH"
-  forge codex --help >/dev/null || die "forge codex --help failed"
-  ok "codex subcommand loads cleanly"
+  step "Step 8 — verify"
+  if [ ! -f "$HOME/.claude/commands/forge/new.md" ]; then
+    die "~/.claude/commands/forge/new.md missing — plugin install did not complete"
+  fi
+  ok "slash commands installed at ~/.claude/commands/forge/"
+  if [ ! -f "$HOME/.claude/forge/VERSION" ]; then
+    die "~/.claude/forge/VERSION missing — plugin install did not complete"
+  fi
+  ok "plugin VERSION: $(cat "$HOME/.claude/forge/VERSION")"
 fi
 
 # ── Done ─────────────────────────────────────────────────────────────────────
 
 cat <<EOF
 
-$(printf '\033[1;32m✓ forge installed successfully.\033[0m')
+$(printf '\033[1;32m✓ Forge plugin installed successfully.\033[0m')
 
   Profile updated: $PROFILE
   Open a new shell (or 'source $PROFILE') to pick up the env vars.
 
   Next:
-    forge --help                                    # top-level usage
-    forge codex index --csharp-root <path>          # index a codebase
-    forge codex index --csharp-root <path> --push <mcp-url> --repo-id <id>
+    1. Restart Claude Code so the plugin's slash commands and statusline load.
+    2. In Claude Code, run:  /forge:help
+    3. Start your first session:  /forge:new
 
-  Troubleshooting: see docs/client-install.md in the forge-cli package, or
-  re-run this installer — it's idempotent.
+  The plugin runs against your Forge MCP endpoint. No local CLI needed —
+  codex indexing is handled centrally by the Forge team.
+
+  Troubleshooting: see client-install.md, or re-run this installer — it's
+  idempotent.
 EOF

@@ -1,17 +1,22 @@
 <#
 .SYNOPSIS
-    @bigbrainforge/forge — Windows installer.
+    @bigbrainforge/forge-plugin — Windows installer.
 
 .DESCRIPTION
-    One-command client install. Handles:
+    One-command client install for the Forge Claude Code plugin. Handles:
       - nvm-windows detection (installs via winget if available)
       - Node 22 LTS install + use
       - FORGE_PACKAGE_TOKEN storage (Windows Credential Manager or GCP Secret Manager)
       - .npmrc registry + auth config
-      - npm install -g @bigbrainforge/forge
+      - npm install -g @bigbrainforge/forge-plugin
       - FORGE_ACCESS_TOKEN storage (same secrets backend)
       - PowerShell $PROFILE wiring
-      - Smoke test
+      - forge-plugin run (copies slash commands + statusline into ~/.claude/)
+      - Plugin-file verification
+
+    The plugin is a standalone artifact — it runs against the deployed Forge
+    MCP server and does not require the `forge` CLI, codex, or shield to be
+    installed locally. Claude Code must already be installed.
 
     Re-run is safe — all operations are idempotent.
 
@@ -28,8 +33,8 @@
 .PARAMETER GcpAccessSecret
     Secret name holding FORGE_ACCESS_TOKEN. Default: FORGE_ACCESS_TOKEN.
 
-.PARAMETER SkipSmokeTest
-    Skip the final 'forge --version' verification.
+.PARAMETER SkipVerify
+    Skip the final plugin-file verification step.
 
 .EXAMPLE
     .\install.ps1
@@ -42,7 +47,7 @@
 .NOTES
     Pre-populate secrets in GCP before running with -Secrets gcp:
       "ghp_..."  | gcloud secrets create FORGE_PACKAGE_TOKEN  --data-file=- --project=PROJECT
-      "codex..." | gcloud secrets create FORGE_ACCESS_TOKEN --data-file=- --project=PROJECT
+      "mcp..."   | gcloud secrets create FORGE_ACCESS_TOKEN --data-file=- --project=PROJECT
 #>
 
 [CmdletBinding()]
@@ -60,15 +65,13 @@ param(
 
     [switch]$NonInteractive,
 
-    [switch]$SkipSmokeTest,
-
-    [switch]$SkipPlugin
+    [switch]$SkipVerify
 )
 
 $ErrorActionPreference = 'Stop'
-$ScriptVersion = '0.1.0'
+$ScriptVersion = '0.2.0'
 $NodeMajor = 22
-$PackageName = '@bigbrainforge/forge'
+$PackageName = '@bigbrainforge/forge-plugin'
 $RegistryUrl = 'https://npm.pkg.github.com'
 $RegistryHost = 'npm.pkg.github.com'
 $PatVar = 'FORGE_PACKAGE_TOKEN'
@@ -217,6 +220,37 @@ public static class Credman {
 }
 '@ -ErrorAction SilentlyContinue
 
+# ── store_token_in_credman helper ────────────────────────────────────────────
+# Reused for both FORGE_PACKAGE_TOKEN (step 3) and FORGE_ACCESS_TOKEN (step 6).
+# Prompts (no-echo), writes to Credential Manager, emits profile line, and
+# populates the current session's env var. Idempotent — reuses the stored
+# credential if it already exists.
+
+function Install-TokenInCredman([string]$VarName, [string]$Label) {
+    $existing = [Credman]::Read($VarName)
+    if ($existing) {
+        Write-InfoMsg "$VarName already in Credential Manager — reusing"
+    } else {
+        Write-InfoMsg "paste $Label (input hidden; will be stored in Credential Manager):"
+        $secure = Read-Host -AsSecureString "  $VarName"
+        $bstr = [System.Runtime.InteropServices.Marshal]::SecureStringToBSTR($secure)
+        $plain = [System.Runtime.InteropServices.Marshal]::PtrToStringBSTR($bstr)
+        [System.Runtime.InteropServices.Marshal]::ZeroFreeBSTR($bstr)
+        if (-not $plain) { Die "empty $VarName" }
+        [Credman]::Write($VarName, $plain)
+        Write-Ok "stored in Credential Manager under '$VarName'"
+        $plain = $null
+    }
+    Add-ProfileLine "`$env:$VarName = [Credman]::Read('$VarName')"
+    Set-Item -Path "Env:$VarName" -Value ([Credman]::Read($VarName))
+}
+
+function Install-TokenInGcp([string]$VarName, [string]$GcpSecret) {
+    $line = "`$env:$VarName = (& gcloud secrets versions access latest --secret=$GcpSecret --project=$GcpProject 2>`$null)"
+    Add-ProfileLine $line
+    Set-Item -Path "Env:$VarName" -Value (& gcloud secrets versions access latest --secret=$GcpSecret --project=$GcpProject)
+}
+
 # ── Step 1: Node 22 via nvm-windows ──────────────────────────────────────────
 
 Write-Step "Step 1 — Node $NodeMajor LTS"
@@ -274,9 +308,9 @@ if ($Secrets -eq 'gcp') {
         if (-not $GcpProject) { Die 'GCP project ID is required under -Secrets gcp' }
     }
 
-    Write-InfoMsg "GCP project:  $GcpProject"
-    Write-InfoMsg "Package secret:   $GcpPackageSecret"
-    Write-InfoMsg "Codex secret: $GcpAccessSecret"
+    Write-InfoMsg "GCP project:    $GcpProject"
+    Write-InfoMsg "Package secret: $GcpPackageSecret"
+    Write-InfoMsg "Access secret:  $GcpAccessSecret"
 
     foreach ($secret in @($GcpPackageSecret, $GcpAccessSecret)) {
         & gcloud secrets describe $secret --project=$GcpProject *>$null
@@ -290,28 +324,12 @@ if ($Secrets -eq 'gcp') {
 
 # ── Step 3: FORGE_PACKAGE_TOKEN → env var ────────────────────────────────────
 
-Write-Step "Step 3 — FORGE_PACKAGE_TOKEN → env var"
+Write-Step "Step 3 — $PatVar → env var"
 
 if ($Secrets -eq 'gcp') {
-    $line = "`$env:$PatVar = (& gcloud secrets versions access latest --secret=$GcpPackageSecret --project=$GcpProject 2>`$null)"
-    Add-ProfileLine $line
-    Set-Item -Path "Env:$PatVar" -Value (& gcloud secrets versions access latest --secret=$GcpPackageSecret --project=$GcpProject)
+    Install-TokenInGcp $PatVar $GcpPackageSecret
 }
 else {
-    $existing = [Credman]::Read($PatVar)
-    if ($existing) {
-        Write-InfoMsg 'FORGE_PACKAGE_TOKEN already in Credential Manager — reusing'
-    } else {
-        Write-InfoMsg 'paste FORGE_PACKAGE_TOKEN (input hidden; will be stored in Credential Manager):'
-        $secure = Read-Host -AsSecureString '  FORGE_PACKAGE_TOKEN'
-        $bstr = [System.Runtime.InteropServices.Marshal]::SecureStringToBSTR($secure)
-        $plain = [System.Runtime.InteropServices.Marshal]::PtrToStringBSTR($bstr)
-        [System.Runtime.InteropServices.Marshal]::ZeroFreeBSTR($bstr)
-        if (-not $plain) { Die 'empty FORGE_PACKAGE_TOKEN' }
-        [Credman]::Write($PatVar, $plain)
-        Write-Ok "stored in Credential Manager under '$PatVar'"
-        $plain = $null
-    }
     # Inject the Credman type definition into $PROFILE once, guarded so we
     # only compile it per shell session (not per Add-Type call). Subsequent
     # lines in $PROFILE can then call [Credman]::Read to populate env vars.
@@ -362,8 +380,7 @@ public static class Credman {
         Add-Content -Path $PROFILE -Value $credmanSource
         Write-Ok 'installed credman helper into $PROFILE'
     }
-    Add-ProfileLine "`$env:$PatVar = [Credman]::Read('$PatVar')"
-    Set-Item -Path "Env:$PatVar" -Value ([Credman]::Read($PatVar))
+    Install-TokenInCredman $PatVar 'FORGE_PACKAGE_TOKEN (GitHub Packages read-access)'
 }
 
 $currentPat = (Get-Item "Env:$PatVar" -ErrorAction SilentlyContinue).Value
@@ -381,7 +398,6 @@ Add-NpmrcLine 'always-auth=true'
 # ── Step 5: npm install ──────────────────────────────────────────────────────
 
 Write-Step "Step 5 — install $PackageName"
-Write-InfoMsg '(this downloads ~9 MB compressed + tree-sitter grammar prebuilds)'
 & npm install -g $PackageName --no-audit --no-fund
 if ($LASTEXITCODE -ne 0) { Die 'npm install failed — see output above' }
 Write-Ok "installed $PackageName"
@@ -391,21 +407,10 @@ Write-Ok "installed $PackageName"
 Write-Step "Step 6 — $TokVar → env var"
 
 if ($Secrets -eq 'gcp') {
-    $line = "`$env:$TokVar = (& gcloud secrets versions access latest --secret=$GcpAccessSecret --project=$GcpProject 2>`$null)"
-    Add-ProfileLine $line
-    Set-Item -Path "Env:$TokVar" -Value (& gcloud secrets versions access latest --secret=$GcpAccessSecret --project=$GcpProject)
+    Install-TokenInGcp $TokVar $GcpAccessSecret
 }
 else {
-    $existing = [Credman]::Read($TokVar)
-    if ($existing) {
-        Write-InfoMsg 'token already in Credential Manager — reusing'
-    } else {
-        Write-InfoMsg "running 'forge shield fix shell-secret $TokVar' (prompt follows)"
-        & forge shield fix shell-secret $TokVar
-        if ($LASTEXITCODE -ne 0) { Die 'shield fix shell-secret failed' }
-    }
-    Add-ProfileLine "`$env:$TokVar = [Credman]::Read('$TokVar')"
-    Set-Item -Path "Env:$TokVar" -Value ([Credman]::Read($TokVar))
+    Install-TokenInCredman $TokVar 'FORGE_ACCESS_TOKEN (Forge MCP endpoint)'
 }
 
 $currentTok = (Get-Item "Env:$TokVar" -ErrorAction SilentlyContinue).Value
@@ -413,51 +418,57 @@ if (-not $currentTok) {
     Write-WarnMsg "$TokVar not populated in this session (will be in new shells after `$PROFILE reload)"
 }
 
-# ── Step 7: install Claude Code plugin (slash commands + statusline) ─────────
+# ── Step 7: run forge-plugin ─────────────────────────────────────────────────
+# Copies slash commands, hooks, statusline, and utility scripts into
+# ~/.claude/. Also registers the MCP server with Claude Code's config.
 
 Write-Step 'Step 7 — Claude Code plugin → ~/.claude/'
 
-if ($SkipPlugin) {
-    Write-InfoMsg 'skipped (-SkipPlugin)'
-} else {
-    if (Test-Command 'forge-plugin') {
-        & forge-plugin
-        if ($LASTEXITCODE -ne 0) {
-            Write-WarnMsg 'forge-plugin install exited with non-zero status'
-        } else {
-            Write-Ok 'plugin installed to ~/.claude/'
-        }
-    } else {
-        Write-WarnMsg 'forge-plugin binary not on PATH. Run manually: forge-plugin'
+if (Test-Command 'forge-plugin') {
+    & forge-plugin
+    if ($LASTEXITCODE -ne 0) {
+        Die 'forge-plugin install exited with non-zero status'
     }
+    Write-Ok 'plugin installed to ~/.claude/'
+} else {
+    Die 'forge-plugin binary not on PATH after npm install. Check: npm config get prefix'
 }
 
-# ── Step 8: smoke test ───────────────────────────────────────────────────────
+# ── Step 8: verify plugin files ──────────────────────────────────────────────
 
-if ($SkipSmokeTest) {
-    Write-Step 'Step 8 — smoke test (skipped by flag)'
+if ($SkipVerify) {
+    Write-Step 'Step 8 — verify (skipped by flag)'
 } else {
-    Write-Step 'Step 8 — smoke test'
-    $v = (& forge --version) 2>$null
-    if ($LASTEXITCODE -ne 0 -or -not $v) { Die 'forge --version failed — install did not succeed' }
-    Write-Ok "forge $v is on PATH"
-    & forge codex --help *>$null
-    if ($LASTEXITCODE -ne 0) { Die 'forge codex --help failed' }
-    Write-Ok 'codex subcommand loads cleanly'
+    Write-Step 'Step 8 — verify'
+    $claudeHome = Join-Path $env:USERPROFILE '.claude'
+    $newCmd = Join-Path $claudeHome 'commands\forge\new.md'
+    $versionFile = Join-Path $claudeHome 'forge\VERSION'
+    if (-not (Test-Path $newCmd)) {
+        Die "$newCmd missing — plugin install did not complete"
+    }
+    Write-Ok "slash commands installed at $(Join-Path $claudeHome 'commands\forge')"
+    if (-not (Test-Path $versionFile)) {
+        Die "$versionFile missing — plugin install did not complete"
+    }
+    $ver = Get-Content $versionFile
+    Write-Ok "plugin VERSION: $ver"
 }
 
 # ── Done ─────────────────────────────────────────────────────────────────────
 
 Write-Host ''
-Write-Host '✓ forge installed successfully.' -ForegroundColor Green
+Write-Host '✓ Forge plugin installed successfully.' -ForegroundColor Green
 Write-Host ''
 Write-Host "  Profile updated: $PROFILE"
 Write-Host '  Open a new PowerShell (or dot-source $PROFILE) to pick up env vars.'
 Write-Host ''
 Write-Host '  Next:'
-Write-Host '    forge --help                                    # top-level usage'
-Write-Host '    forge codex index --csharp-root <path>          # index a codebase'
-Write-Host '    forge codex index --csharp-root <path> --push <mcp-url> --repo-id <id>'
+Write-Host "    1. Restart Claude Code so the plugin's slash commands and statusline load."
+Write-Host '    2. In Claude Code, run:  /forge:help'
+Write-Host '    3. Start your first session:  /forge:new'
 Write-Host ''
-Write-Host '  Troubleshooting: see docs/client-install.md in the forge-cli package, or'
-Write-Host '  re-run this installer — it is idempotent.'
+Write-Host '  The plugin runs against your Forge MCP endpoint. No local CLI needed —'
+Write-Host '  codex indexing is handled centrally by the Forge team.'
+Write-Host ''
+Write-Host '  Troubleshooting: see client-install.md, or re-run this installer —'
+Write-Host '  it is idempotent.'

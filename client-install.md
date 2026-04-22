@@ -1,9 +1,11 @@
-# Forge CLI — Client Installation Guide
+# Forge Plugin — Client Installation Guide
 
-**Package:** `@bigbrainforge/forge`
-**Version:** 0.5.23
-**Supported platforms:** Windows x64, macOS arm64 (Apple Silicon)
+**Package:** `@bigbrainforge/forge-plugin`
+**Supported platforms:** Windows x64, macOS arm64 (Apple Silicon), Linux x64
 **Runtime:** Node 22 LTS (installer sets this up for you)
+**Requires:** Claude Code already installed ([claude.ai/code](https://claude.ai/code))
+
+The Forge plugin is a Claude Code plugin — it adds slash commands (`/forge:new`, `/forge:status`, etc.), a statusline hook, and registers the Forge MCP server in your Claude Code config. All orchestration runs server-side on the Forge MCP endpoint; the plugin itself is pure configuration and does not run codex indexing locally.
 
 ---
 
@@ -12,7 +14,7 @@
 1. [What you'll receive from BigBrain](#1-what-youll-receive-from-bigbrain)
 2. [Quick install (recommended)](#2-quick-install-recommended)
 3. [Secrets backends: OS keystore vs GCP Secret Manager](#3-secrets-backends-os-keystore-vs-gcp-secret-manager)
-4. [First command + MCP push](#4-first-command--mcp-push)
+4. [After install — verify the plugin](#4-after-install--verify-the-plugin)
 5. [Manual install (fallback / reference)](#5-manual-install-fallback--reference)
 6. [Troubleshooting](#6-troubleshooting)
 7. [Updating](#7-updating)
@@ -26,15 +28,15 @@ Before you start, a BigBrain representative will send you — out-of-band via an
 
 | Item | Purpose |
 |---|---|
-| **FORGE_PACKAGE_TOKEN** | Read access to the `@bigbrainforge` GitHub Packages registry (`read:packages` scope) |
-| **`FORGE_ACCESS_TOKEN`** | Auth to your Forge MCP ingest endpoint |
-| **Forge MCP endpoint URL** | e.g. `https://forge-mcp.bigbrainforge.com` |
-| **Your repo/project identifier** | Pass to `forge codex index --repo-id <id>` |
+| `FORGE_PACKAGE_TOKEN` | Read access to the `@bigbrainforge` GitHub Packages registry (`read:packages` scope). Used by `npm install` only. |
+| `FORGE_ACCESS_TOKEN` | Bearer token for your Forge MCP endpoint. Used by the plugin's slash commands at runtime. |
+| Forge MCP endpoint URL | e.g. `https://forge-mcp.bigbrainforge.com` (already wired into the plugin's default config) |
+| Your repo/project identifier | Used when starting a Forge session (`/forge:new` will prompt) |
 
-If your organisation uses **GCP Secret Manager** (this is the default for our pilot clients), BigBrain will work with you to pre-populate two secrets in your GCP project:
+If your organisation uses **GCP Secret Manager** (the default for pilot clients), BigBrain will work with you to pre-populate two secrets in your GCP project:
 
 - `FORGE_PACKAGE_TOKEN` — your GitHub Packages read-access token value
-- `FORGE_ACCESS_TOKEN` — your MCP ingest token value
+- `FORGE_ACCESS_TOKEN` — your MCP endpoint bearer token value
 
 You'll pass the GCP project ID to the installer; nothing else about either secret touches your workstation.
 
@@ -42,26 +44,26 @@ You'll pass the GCP project ID to the installer; nothing else about either secre
 
 ## 2. Quick install (recommended)
 
-The installer handles everything: Node 22 via nvm, registry config, secret storage, package install, shell profile wiring, and a smoke test. It **prompts** for the choices it needs — no flags required for normal use. Re-running is safe.
+The installer handles everything: Node 22 via nvm, registry config, secret storage, plugin install, shell profile wiring, and verification. It **prompts** for the choices it needs — no flags required for normal use. Re-running is safe.
 
-Both installers are published as assets on every `@bigbrainforge/forge` GitHub Release. The `/releases/latest/download/...` URL always resolves to the newest published version, so this doc doesn't need to change across releases.
+Both installer scripts are served from `bigbrainforge/forge-installers` (public repo, no auth required to download), so `curl` / `Invoke-WebRequest` work before you've configured any tokens.
 
 ### macOS (Apple Silicon) / Linux
 
 ```bash
-curl -fsSL https://github.com/bigbrainforge/forge/releases/latest/download/install.sh -o install.sh
+curl -fsSL https://raw.githubusercontent.com/bigbrainforge/forge-installers/main/install.sh -o install.sh
 chmod +x install.sh
 ./install.sh
 ```
 
-The installer asks you which secrets backend to use (OS keystore or GCP Secret Manager), and — if you pick GCP — prompts for the project ID (defaulting to your current `gcloud config` project). Everything else is automatic.
+The installer asks which secrets backend to use (OS keystore or GCP Secret Manager) and — if you pick GCP — prompts for the project ID (defaulting to your current `gcloud config` project). Everything else is automatic.
 
 ### Windows (x64, PowerShell)
 
 Run in a **non-elevated** PowerShell:
 
 ```powershell
-Invoke-WebRequest https://github.com/bigbrainforge/forge/releases/latest/download/install.ps1 -OutFile install.ps1
+Invoke-WebRequest https://raw.githubusercontent.com/bigbrainforge/forge-installers/main/install.ps1 -OutFile install.ps1
 .\install.ps1
 ```
 
@@ -71,7 +73,7 @@ If PowerShell blocks the script (execution policy), run once:
 Set-ExecutionPolicy -Scope CurrentUser -ExecutionPolicy RemoteSigned
 ```
 
-After the installer completes, **open a new terminal window** so the updated shell profile takes effect, then skip to [Section 4](#4-first-command--mcp-push).
+After the installer completes, **restart Claude Code** so the new slash commands and statusline load, then skip to [Section 4](#4-after-install--verify-the-plugin).
 
 ### Scripted / CI installs (skip the prompts)
 
@@ -93,16 +95,16 @@ See `./install.sh --help` / `Get-Help .\install.ps1 -Full` for the full flag lis
 
 ## 3. Secrets backends: OS keystore vs GCP Secret Manager
 
-The installer offers two backends for storing the FORGE_PACKAGE_TOKEN and `FORGE_ACCESS_TOKEN`. Both keep the secret out of any file on disk — the difference is *where* the encrypted value lives.
+The installer offers two backends for storing `FORGE_PACKAGE_TOKEN` and `FORGE_ACCESS_TOKEN`. Both keep the secret out of any file on disk — the difference is *where* the encrypted value lives.
 
 | | **OS keystore** (default) | **GCP Secret Manager** |
 |---|---|---|
-| Where stored | macOS Keychain / Windows Credential Manager | Your GCP project, encrypted at rest by Google |
+| Where stored | macOS Keychain / Linux libsecret / Windows Credential Manager | Your GCP project, encrypted at rest by Google |
 | Access control | Per-user on the workstation | GCP IAM; rotatable centrally |
 | Audit | OS-level only | Cloud Audit Logs |
-| Prerequisites | None (built into macOS/Windows) | `gcloud` CLI installed + `gcloud auth login` completed; secrets pre-created |
+| Prerequisites | None (built into macOS/Windows; Linux needs `libsecret-tools`) | `gcloud` CLI installed + `gcloud auth login` completed; secrets pre-created |
 | Rotation | Re-run installer | Update secret version in GCP; shell re-fetches on next startup |
-| Offline resilience | Works offline | Shell startup needs network reachability to GCP (degrades to empty env var; `forge` will print a clear auth error) |
+| Offline resilience | Works offline | Shell startup needs network reachability to GCP (degrades to empty env var; plugin will print a clear auth error) |
 
 **Pick GCP Secret Manager if:** your org has centralized secret management, compliance requires cloud-audited secret access, or multiple engineers share secret rotation duties.
 
@@ -121,10 +123,10 @@ export FORGE_ACCESS_TOKEN="$(gcloud secrets versions access latest --secret=FORG
 ```powershell
 # Windows, appended to $PROFILE
 $env:FORGE_PACKAGE_TOKEN = (& gcloud secrets versions access latest --secret=FORGE_PACKAGE_TOKEN --project=YOUR-PROJECT 2>$null)
-$env:FORGE_ACCESS_TOKEN     = (& gcloud secrets versions access latest --secret=FORGE_ACCESS_TOKEN --project=YOUR-PROJECT 2>$null)
+$env:FORGE_ACCESS_TOKEN  = (& gcloud secrets versions access latest --secret=FORGE_ACCESS_TOKEN --project=YOUR-PROJECT 2>$null)
 ```
 
-The values populate `process.env` for every tool started from that shell — including `forge` and `npm install` — without ever being written anywhere else on your machine.
+The values populate `process.env` for every process started from that shell — including `npm install` and the plugin's MCP client inside Claude Code — without ever being written anywhere else on your machine.
 
 ### Pre-creating the GCP secrets
 
@@ -135,7 +137,7 @@ A BigBrain engineer typically does this for you. If you're doing it yourself, wi
 printf 'ghp_xxxxxxxxxxxxxx' | \
   gcloud secrets create FORGE_PACKAGE_TOKEN --data-file=- --project=YOUR-PROJECT
 
-# FORGE_ACCESS_TOKEN (MCP ingest)
+# FORGE_ACCESS_TOKEN (MCP endpoint)
 printf 'your-mcp-token-here' | \
   gcloud secrets create FORGE_ACCESS_TOKEN --data-file=- --project=YOUR-PROJECT
 ```
@@ -143,13 +145,11 @@ printf 'your-mcp-token-here' | \
 Then grant read access to each engineer's GCP identity:
 
 ```bash
-gcloud secrets add-iam-policy-binding FORGE_PACKAGE_TOKEN \
-  --member='user:dev@example.com' --role='roles/secretmanager.secretAccessor' \
-  --project=YOUR-PROJECT
-
-gcloud secrets add-iam-policy-binding FORGE_ACCESS_TOKEN \
-  --member='user:dev@example.com' --role='roles/secretmanager.secretAccessor' \
-  --project=YOUR-PROJECT
+for secret in FORGE_PACKAGE_TOKEN FORGE_ACCESS_TOKEN; do
+  gcloud secrets add-iam-policy-binding "$secret" \
+    --member='user:dev@example.com' --role='roles/secretmanager.secretAccessor' \
+    --project=YOUR-PROJECT
+done
 ```
 
 Rotate a secret by creating a new version; shells automatically pick up the latest on next startup:
@@ -160,27 +160,31 @@ printf '<new-token>' | gcloud secrets versions add FORGE_ACCESS_TOKEN --data-fil
 
 ---
 
-## 4. First command + MCP push
+## 4. After install — verify the plugin
 
-After the installer completes and you've opened a fresh shell:
+The installer's final step runs `forge-plugin` (the bin from the installed package), which copies slash commands and the statusline hook into `~/.claude/` and registers the Forge MCP server with Claude Code.
 
-```bash
-# Verify the toolchain
-forge --version                      # → 0.5.23
-forge --help
-forge codex --help
+After the installer exits:
 
-# Index a C# repo locally (no MCP push)
-cd /path/to/your/repo
-forge codex index --csharp-root . --output .forge/codex
+1. **Restart Claude Code** (desktop app, VS Code extension, or close all terminals if using the CLI). The slash commands and statusline only load on a fresh Claude Code session.
+2. **Verify the files landed:**
 
-# Index and push to your MCP endpoint
-forge codex index --csharp-root . \
-  --push https://forge-mcp.bigbrainforge.com \
-  --repo-id your-assigned-repo-id
-```
+   ```bash
+   # macOS/Linux
+   ls ~/.claude/commands/forge/          # should list new.md, help.md, status.md, ...
+   cat ~/.claude/forge/VERSION           # installed version
+   ```
 
-`forge` reads `FORGE_ACCESS_TOKEN` from the environment automatically. If it's missing, you get a clear error pointing you back to the installer or to [Section 6](#6-troubleshooting).
+   ```powershell
+   # Windows
+   Get-ChildItem $HOME\.claude\commands\forge
+   Get-Content   $HOME\.claude\forge\VERSION
+   ```
+
+3. **In Claude Code**, type `/forge:help` — you should see the command list.
+4. **Start your first session** with `/forge:new`.
+
+The plugin talks to your Forge MCP endpoint using `FORGE_ACCESS_TOKEN` — if the shell you launched Claude Code from doesn't have it set, slash commands will fail with a clear auth error. Fix: open a new shell (the installer wired the profile) and launch Claude Code from there.
 
 ---
 
@@ -190,7 +194,7 @@ Use this path only if the installer fails and you need to debug, or if your envi
 
 ### 5.1 Install Node 22 LTS
 
-**macOS:**
+**macOS / Linux:**
 ```bash
 curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.1/install.sh | bash
 # reload shell, then:
@@ -214,10 +218,16 @@ security add-generic-password -U -s 'FORGE_PACKAGE_TOKEN' -a "$USER" -w
 export FORGE_PACKAGE_TOKEN="$(security find-generic-password -s 'FORGE_PACKAGE_TOKEN' -a "$USER" -w 2>/dev/null)"
 ```
 
-**Windows Credential Manager:** use the installer's embedded helper, or the CredentialManager PowerShell module:
+**Linux libsecret:**
+```bash
+secret-tool store --label='FORGE_PACKAGE_TOKEN' service FORGE_PACKAGE_TOKEN
+# Add to ~/.bashrc:
+export FORGE_PACKAGE_TOKEN="$(secret-tool lookup service FORGE_PACKAGE_TOKEN 2>/dev/null)"
+```
+
+**Windows Credential Manager:** easiest via the installer's embedded Credman helper. If doing it entirely manually, use the CredentialManager PowerShell module (requires `Install-Module CredentialManager -Scope CurrentUser`):
 ```powershell
-Install-Module CredentialManager -Scope CurrentUser
-New-StoredCredential -Target 'FORGE_PACKAGE_TOKEN' -UserName 'forge' \
+New-StoredCredential -Target 'FORGE_PACKAGE_TOKEN' -UserName 'forge' `
   -Password (Read-Host -AsSecureString) -Persist LocalMachine
 
 # Add to $PROFILE:
@@ -239,30 +249,43 @@ Append these three lines to `~/.npmrc` (path is `%USERPROFILE%\.npmrc` on Window
 always-auth=true
 ```
 
-### 5.4 Install
+### 5.4 Install the plugin package
 
 ```bash
-npm install -g @bigbrainforge/forge
+npm install -g @bigbrainforge/forge-plugin
 ```
 
 ### 5.5 Store FORGE_ACCESS_TOKEN
 
-Same pattern as step 5.2 but with `FORGE_ACCESS_TOKEN` as the env-var name and secret key. For the OS keystore path, the easiest way is:
+Same pattern as §5.2 but with `FORGE_ACCESS_TOKEN` as the env-var name and secret key. Example (macOS Keychain):
 
 ```bash
-forge shield fix shell-secret FORGE_ACCESS_TOKEN
+security add-generic-password -U -s 'FORGE_ACCESS_TOKEN' -a "$USER" -w
+# paste FORGE_ACCESS_TOKEN at prompt (hidden)
+
+# Add to ~/.zshrc:
+export FORGE_ACCESS_TOKEN="$(security find-generic-password -s 'FORGE_ACCESS_TOKEN' -a "$USER" -w 2>/dev/null)"
 ```
 
-Paste the emitted profile line into your shell profile. For GCP, append:
+Or GCP:
 
 ```bash
 export FORGE_ACCESS_TOKEN="$(gcloud secrets versions access latest --secret=FORGE_ACCESS_TOKEN --project=YOUR-PROJECT 2>/dev/null)"
 ```
 
-### 5.6 Verify
+### 5.6 Run the plugin installer
 
 ```bash
-forge --version
+forge-plugin
+```
+
+This copies slash commands and the statusline hook into `~/.claude/` and registers the Forge MCP server. Restart Claude Code afterward.
+
+### 5.7 Verify
+
+```bash
+ls ~/.claude/commands/forge/
+cat ~/.claude/forge/VERSION
 ```
 
 ---
@@ -271,10 +294,10 @@ forge --version
 
 ### `npm install` fails with `401 Unauthorized`
 
-Your FORGE_PACKAGE_TOKEN isn't reaching npm. Check:
+Your `FORGE_PACKAGE_TOKEN` isn't reaching npm. Check:
 
 ```bash
-# macOS
+# macOS/Linux
 echo "length=${#FORGE_PACKAGE_TOKEN}"
 
 # Windows
@@ -284,25 +307,41 @@ echo "length=${#FORGE_PACKAGE_TOKEN}"
 If zero-length, re-run the installer or re-source your profile (`source ~/.zshrc` / `. $PROFILE`). If still zero, verify the secret store contents:
 
 ```bash
-# macOS keystore
+# macOS Keychain
 security find-generic-password -s 'FORGE_PACKAGE_TOKEN' -a "$USER" -w
+
+# Linux libsecret
+secret-tool lookup service FORGE_PACKAGE_TOKEN
 
 # GCP
 gcloud secrets versions access latest --secret=FORGE_PACKAGE_TOKEN --project=YOUR-PROJECT
 ```
 
-### `forge: requires Node 22 LTS`
+### Slash commands don't appear in Claude Code
 
-Your current shell's Node isn't 22. Run `node --version`. Re-run the installer, or manually `nvm use 22`.
+- Confirm `ls ~/.claude/commands/forge/` shows `.md` files.
+- Confirm you've fully restarted Claude Code (close all windows/processes).
+- Run `forge-plugin` again — it's idempotent and will re-copy any missing files.
 
-### `forge: command not found` after install
+### MCP server errors inside Claude Code
 
-Global npm bin isn't on `PATH`. Find it:
+The plugin registers `forge-mcp` in Claude Code's MCP config with a bearer header that interpolates `${FORGE_ACCESS_TOKEN}` at Claude Code startup. If you see auth errors in slash-command output:
 
 ```bash
-npm config get prefix
-# macOS/Linux: add "$(npm config get prefix)/bin" to PATH
-# Windows: it's usually %APPDATA%\npm — add to PATH via System Properties
+# macOS/Linux
+echo "length=${#FORGE_ACCESS_TOKEN}"
+# Windows
+"length=$($env:FORGE_ACCESS_TOKEN.Length)"
+```
+
+If zero, re-source your profile and relaunch Claude Code from that shell. Claude Code inherits the env vars of the process that spawned it.
+
+### Statusline not showing
+
+Check `~/.claude/settings.json` — it should have a `statusLine` entry pointing at `~/.claude/hooks/forge-statusline.js`. If another tool owns the statusline and you want Forge's to replace it, re-run:
+
+```bash
+forge-plugin --force-statusline
 ```
 
 ### PowerShell execution policy blocks the installer
@@ -323,38 +362,18 @@ gcloud secrets describe FORGE_PACKAGE_TOKEN --project=YOUR-PROJECT
 
 Common causes: expired `gcloud auth login` session (re-run it), wrong project, missing `roles/secretmanager.secretAccessor` IAM binding on your user.
 
-### MCP push fails with auth error
-
-Verify `FORGE_ACCESS_TOKEN` is set:
-
-```bash
-# macOS
-echo "length=${#FORGE_ACCESS_TOKEN}"
-# Windows
-"length=$($env:FORGE_ACCESS_TOKEN.Length)"
-```
-
-If zero, re-run installer or re-source profile.
-
-### `tree-sitter-*` native binding fails to load
-
-Rare; a grammar's prebuilt `.node` isn't matching your platform:
-
-```bash
-cd $(npm root -g)/@bigbrainforge/forge
-npm rebuild tree-sitter tree-sitter-c-sharp tree-sitter-python
-```
-
 ---
 
 ## 7. Updating
 
 ```bash
-npm install -g @bigbrainforge/forge@latest
-forge --version
+npm install -g @bigbrainforge/forge-plugin@latest
+forge-plugin
 ```
 
-Under GCP-secrets mode, rotating `FORGE_PACKAGE_TOKEN` or `FORGE_ACCESS_TOKEN` is a one-liner:
+Restart Claude Code afterward.
+
+Under GCP-secrets mode, rotating either token is a one-liner:
 
 ```bash
 printf '<new-value>' | gcloud secrets versions add FORGE_PACKAGE_TOKEN --data-file=- --project=YOUR-PROJECT
@@ -367,20 +386,20 @@ printf '<new-value>' | gcloud secrets versions add FORGE_PACKAGE_TOKEN --data-fi
 
 | Task | Command |
 |---|---|
-| Run installer (macOS, keystore) | `./install.sh` |
-| Run installer (macOS, GCP) | `./install.sh --secrets=gcp --gcp-project=P` |
+| Run installer (macOS/Linux, keystore) | `./install.sh` |
+| Run installer (macOS/Linux, GCP) | `./install.sh --secrets=gcp --gcp-project=P` |
 | Run installer (Windows, keystore) | `.\install.ps1` |
 | Run installer (Windows, GCP) | `.\install.ps1 -Secrets gcp -GcpProject P` |
-| Update | `npm install -g @bigbrainforge/forge@latest` |
-| Help | `forge --help`, `forge codex --help`, `forge shield --help` |
-| Index repo | `forge codex index --csharp-root . --output .forge/codex` |
-| Push to MCP | `forge codex index --csharp-root . --push <mcp-url> --repo-id <id>` |
-| Audit machine | `forge shield audit` |
+| Re-run plugin file copy | `forge-plugin` |
+| Update | `npm install -g @bigbrainforge/forge-plugin@latest && forge-plugin` |
+| Uninstall | `forge-plugin --uninstall` |
+| Verify install | `ls ~/.claude/commands/forge/` + `cat ~/.claude/forge/VERSION` |
+| In Claude Code | `/forge:help`, `/forge:new`, `/forge:status`, `/forge:resume`, `/forge:complete` |
 
 ---
 
 ## Support
 
-- **Install issues:** contact your BigBrain representative with the output of the installer and `forge --version`.
-- **Runtime issues:** include the full command + output.
+- **Install issues:** contact your BigBrain representative with the installer output + `cat ~/.claude/forge/VERSION`.
+- **Plugin / slash-command issues:** include the full command + output.
 - **Security concerns:** email security@bigbrainforge.com — do not file as public GitHub issues.
