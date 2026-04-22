@@ -7,7 +7,7 @@ This repo contains only the installer boilerplate — the scripts that bootstrap
 ## Install
 
 Your BigBrain representative will send you:
-- A GitHub PAT with `read:packages` scope (stored in your password manager)
+- A `FORGE_PACKAGE_TOKEN` (GitHub Packages read-access token) — stored in your password manager
 - A `FORGE_ACCESS_TOKEN` for your Forge MCP endpoint
 - Your Forge MCP URL + assigned repo/project identifier
 
