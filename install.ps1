@@ -592,6 +592,35 @@ if (-not $currentTok) {
     Write-WarnMsg "$TokVar not populated in this session (will be in new shells after `$PROFILE reload)"
 }
 
+# ── Step 6.5: BurntToast for auto-update notifications (Windows only) ────────
+# The plugin's Stop hook (auto-update-if-eligible.js) emits OS toast
+# notifications after auto-installing a new plugin release ("restart
+# Claude Code to load X.Y.Z"). macOS uses built-in `osascript`; on
+# Windows the notifier shells out to `New-BurntToastNotification`,
+# which requires the BurntToast PowerShell module. Install here,
+# per-user, no admin — same pattern the claude-Win11-notifications
+# skill uses. Idempotent: re-runs are a no-op because `-Force` is
+# paired with Get-Module check below.
+#
+# Failure modes (corp policy blocks PSGallery, proxy issues, etc.)
+# degrade gracefully: the plugin statusline still nudges via its
+# cyan "<current>-><target>" segment; only the toast layer is lost.
+
+Write-Step 'Step 6.5 — BurntToast for Windows toast notifications'
+
+if (Get-Module -ListAvailable -Name BurntToast) {
+    Write-Ok 'BurntToast already installed'
+} else {
+    try {
+        Install-Module -Name BurntToast -Scope CurrentUser -Force -AllowClobber -ErrorAction Stop
+        Write-Ok 'BurntToast installed (CurrentUser scope)'
+    } catch {
+        Write-WarnMsg "BurntToast install failed: $($_.Exception.Message)"
+        Write-WarnMsg '  Auto-update statusline nudge will still work; only OS toasts are lost.'
+        Write-WarnMsg '  To retry later: pwsh -Command "Install-Module -Name BurntToast -Scope CurrentUser -Force"'
+    }
+}
+
 # ── Step 7: run forge-plugin ─────────────────────────────────────────────────
 # Copies slash commands, hooks, statusline, and utility scripts into
 # ~/.claude/. Also registers the MCP server with Claude Code's config.
