@@ -84,6 +84,15 @@ $RegistryHost = 'npm.pkg.github.com'
 $PatVar = 'FORGE_PACKAGE_TOKEN'
 $TokVar = 'FORGE_ACCESS_TOKEN'
 
+# Legacy token names from pre-PR-#230 installs. If a client's Credential
+# Manager has these but not the current names, the installer silently
+# migrates (read-then-write-under-new-name-then-delete-old). Non-
+# destructive — the secret is preserved, just stored under the canonical
+# name. This is what lets a pilot re-run the installer with zero prompts
+# even if their original install predates the rename.
+$LegacyPatVar = 'GH_FORGE_PACKAGES_PAT'
+$LegacyTokVar = 'FORGE_CODEX_TOKEN'
+
 # ── Prompt helpers ──────────────────────────────────────────────────────────
 
 function Read-PromptLine([string]$Question, [string]$Default) {
@@ -371,8 +380,32 @@ if ($existingNode -and $existingNode.StartsWith("v$NodeMajor")) {
 #
 # -ForceTokens bypasses the detection for rotation / bad-token cases.
 
-function Test-ExistingKeystoreTokens {
+function Migrate-LegacyCredmanEntry([string]$LegacyName, [string]$CurrentName) {
+    # Non-destructive migration: if a legacy-named token exists in
+    # Credential Manager but the current-named one does not, copy the
+    # value across under the new name. The legacy entry is left in
+    # place (harmless, unused from here on) so we don't risk data loss
+    # from a failed write. Returns $true if a migration was performed.
     try {
+        $existingCurrent = [CredmanV2]::Read($CurrentName)
+        if ($existingCurrent) { return $false }  # current name already has a value
+        $legacyValue = [CredmanV2]::Read($LegacyName)
+        if (-not $legacyValue) { return $false } # no legacy value either
+        [CredmanV2]::Write($CurrentName, $legacyValue)
+        Write-InfoMsg "migrated $LegacyName -> $CurrentName in Credential Manager (legacy entry left in place, harmless)"
+        return $true
+    } catch {
+        return $false
+    }
+}
+
+function Test-ExistingKeystoreTokens {
+    # First migrate any legacy-named entries to current names. This is
+    # idempotent and non-destructive for clients whose keystore already
+    # uses the current names. After migration, check for current names.
+    try {
+        Migrate-LegacyCredmanEntry $LegacyPatVar $PatVar | Out-Null
+        Migrate-LegacyCredmanEntry $LegacyTokVar $TokVar | Out-Null
         $pkg = [CredmanV2]::Read($PatVar)
         $acc = [CredmanV2]::Read($TokVar)
         return ($pkg -and $acc)
