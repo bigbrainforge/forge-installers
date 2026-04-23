@@ -429,13 +429,24 @@ cat <<EOF
 
 $(printf '\033[1;32m✓ Forge plugin installed successfully.\033[0m')
 
-  Profile updated: $PROFILE
-  Open a new shell (or 'source $PROFILE') to pick up the env vars.
+  $(printf '\033[1;33m! Required next step — load FORGE_PACKAGE_TOKEN and FORGE_ACCESS_TOKEN:\033[0m')
+
+    The installer appended env-var lines to: $PROFILE
+    Existing shells (including the one running this installer) do NOT have
+    those env vars set. Before launching Claude Code, either:
+
+      $(printf '\033[1m• Open a new terminal\033[0m'), or
+      $(printf '\033[1m• Run:  source %s\033[0m' "$PROFILE")
+
+    Then verify both are populated:
+      echo "pkg=\${#FORGE_PACKAGE_TOKEN} access=\${#FORGE_ACCESS_TOKEN}"
+      # both lengths should be non-zero
 
   Next:
-    1. Restart Claude Code so the plugin's slash commands and statusline load.
-    2. In Claude Code, run:  /forge:help
-    3. Start your first session:  /forge:new
+    1. Open a new shell (or source $PROFILE) — see above.
+    2. Launch Claude Code from that shell so it inherits the env vars.
+    3. In Claude Code, run:  /forge:help
+    4. Start your first session:  /forge:new
 
   The plugin runs against your Forge MCP endpoint. No local CLI needed —
   codex indexing is handled centrally by the Forge team.

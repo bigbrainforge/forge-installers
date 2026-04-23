@@ -73,7 +73,7 @@ If PowerShell blocks the script (execution policy), run once:
 Set-ExecutionPolicy -Scope CurrentUser -ExecutionPolicy RemoteSigned
 ```
 
-After the installer completes, **restart Claude Code** so the new slash commands and statusline load, then skip to [Section 4](#4-after-install--verify-the-plugin).
+After the installer completes, you MUST either **open a new terminal** or **re-source your shell profile** (the installer prints the exact command). Existing shells don't have `FORGE_PACKAGE_TOKEN` or `FORGE_ACCESS_TOKEN` set — they only populate in shells started after the installer wrote to your profile. Then **restart Claude Code from that new shell** so the slash commands, statusline, and env vars all load together, and skip to [Section 4](#4-after-install--verify-the-plugin).
 
 ### Scripted / CI installs (skip the prompts)
 
@@ -166,8 +166,33 @@ The installer's final step runs `forge-plugin` (the bin from the installed packa
 
 After the installer exits:
 
-1. **Restart Claude Code** (desktop app, VS Code extension, or close all terminals if using the CLI). The slash commands and statusline only load on a fresh Claude Code session.
-2. **Verify the files landed:**
+1. **Load the tokens into your shell environment.** The installer appended profile lines that read `FORGE_PACKAGE_TOKEN` and `FORGE_ACCESS_TOKEN` from your secret store at shell startup — but the shell that ran the installer doesn't have them yet. Either:
+
+   ```bash
+   # macOS/Linux — open a new terminal, OR re-source the profile:
+   source ~/.zshrc        # or: source ~/.bashrc / ~/.profile — whichever the installer updated
+   ```
+
+   ```powershell
+   # Windows — open a new PowerShell window, OR dot-source $PROFILE:
+   . $PROFILE
+   ```
+
+   Verify both tokens are populated (both lengths should be non-zero):
+
+   ```bash
+   # macOS/Linux
+   echo "pkg=${#FORGE_PACKAGE_TOKEN} access=${#FORGE_ACCESS_TOKEN}"
+   ```
+
+   ```powershell
+   # Windows
+   "pkg=$($env:FORGE_PACKAGE_TOKEN.Length) access=$($env:FORGE_ACCESS_TOKEN.Length)"
+   ```
+
+2. **Restart Claude Code from that shell.** Close the existing Claude Code app/CLI completely and relaunch it from the shell where the env vars are set — Claude Code inherits its environment from the process that spawned it, so launching from a stale shell will leave the plugin unable to authenticate to the MCP server.
+
+3. **Verify the plugin files landed:**
 
    ```bash
    # macOS/Linux
@@ -181,10 +206,10 @@ After the installer exits:
    Get-Content   $HOME\.claude\forge\VERSION
    ```
 
-3. **In Claude Code**, type `/forge:help` — you should see the command list.
-4. **Start your first session** with `/forge:new`.
+4. **In Claude Code**, type `/forge:help` — you should see the command list.
+5. **Start your first session** with `/forge:new`.
 
-The plugin talks to your Forge MCP endpoint using `FORGE_ACCESS_TOKEN` — if the shell you launched Claude Code from doesn't have it set, slash commands will fail with a clear auth error. Fix: open a new shell (the installer wired the profile) and launch Claude Code from there.
+If slash commands fail with a clear auth error, the shell Claude Code inherited didn't have `FORGE_ACCESS_TOKEN` set. Re-run step 1 above, close and relaunch Claude Code from the refreshed shell.
 
 ---
 
@@ -394,7 +419,7 @@ printf '<new-value>' | gcloud secrets versions add FORGE_PACKAGE_TOKEN --data-fi
 | Update | `npm install -g @bigbrainforge/forge-plugin@latest && forge-plugin` |
 | Uninstall | `forge-plugin --uninstall` |
 | Verify install | `ls ~/.claude/commands/forge/` + `cat ~/.claude/forge/VERSION` |
-| In Claude Code | `/forge:help`, `/forge:new`, `/forge:status`, `/forge:resume`, `/forge:complete` |
+| In Claude Code | `/forge:help`, `/forge:new`, `/forge:status`, `/forge:continue`, `/forge:complete` |
 
 ---
 

@@ -633,13 +633,24 @@ if ($SkipVerify) {
 Write-Host ''
 Write-Host '✓ Forge plugin installed successfully.' -ForegroundColor Green
 Write-Host ''
-Write-Host "  Profile updated: $PROFILE"
-Write-Host '  Open a new PowerShell (or dot-source $PROFILE) to pick up env vars.'
+Write-Host '  ! Required next step — load FORGE_PACKAGE_TOKEN and FORGE_ACCESS_TOKEN:' -ForegroundColor Yellow
+Write-Host ''
+Write-Host "    The installer appended env-var lines to: $PROFILE"
+Write-Host '    Existing PowerShell sessions (including this one) do NOT have'
+Write-Host '    those env vars set. Before launching Claude Code, either:'
+Write-Host ''
+Write-Host '      • Open a new PowerShell window, or' -ForegroundColor White
+Write-Host "      • Run:  . `"$PROFILE`"" -ForegroundColor White
+Write-Host ''
+Write-Host '    Then verify both are populated:'
+Write-Host '      "pkg=$($env:FORGE_PACKAGE_TOKEN.Length) access=$($env:FORGE_ACCESS_TOKEN.Length)"'
+Write-Host '      # both lengths should be non-zero'
 Write-Host ''
 Write-Host '  Next:'
-Write-Host "    1. Restart Claude Code so the plugin's slash commands and statusline load."
-Write-Host '    2. In Claude Code, run:  /forge:help'
-Write-Host '    3. Start your first session:  /forge:new'
+Write-Host "    1. Open a new PowerShell (or dot-source `"$PROFILE`") — see above."
+Write-Host '    2. Launch Claude Code from that shell so it inherits the env vars.'
+Write-Host '    3. In Claude Code, run:  /forge:help'
+Write-Host '    4. Start your first session:  /forge:new'
 Write-Host ''
 Write-Host '  The plugin runs against your Forge MCP endpoint. No local CLI needed —'
 Write-Host '  codex indexing is handled centrally by the Forge team.'
