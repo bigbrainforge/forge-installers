@@ -65,7 +65,14 @@ param(
 
     [switch]$NonInteractive,
 
-    [switch]$SkipVerify
+    [switch]$SkipVerify,
+
+    # Force fresh token prompts even if existing tokens are detected in
+    # Credential Manager or GCP. Use for rotation, or when the stored
+    # tokens are known bad (e.g. 401 from GitHub Packages). Without this
+    # flag the installer auto-detects and reuses existing tokens silently,
+    # making re-runs a zero-prompt self-heal.
+    [switch]$ForceTokens
 )
 
 $ErrorActionPreference = 'Stop'
@@ -314,12 +321,44 @@ if (-not $nodeVersion.StartsWith("v$NodeMajor")) { Die "expected Node $NodeMajor
 Write-Ok "Node $nodeVersion active"
 
 # ── Step 2: choose secrets backend ───────────────────────────────────────────
+#
+# Self-heal on re-run: if the user already has FORGE_PACKAGE_TOKEN AND
+# FORGE_ACCESS_TOKEN in Windows Credential Manager (from a prior install),
+# skip the backend prompt and auto-select `keystore`. This is what makes
+# the installer idempotent — a pilot client hitting the pre-0.6.0 bin-shim
+# collision can re-run `install.ps1` with zero prompts and the installer
+# heals the state (sweeps shims, reinstalls scoped package, nukes stale
+# command markdown, re-runs postinstall). Without this auto-detect, even
+# the idempotent `Install-TokenInCredman` path would still stop at the
+# backend-choice prompt.
+#
+# -ForceTokens bypasses the detection for rotation / bad-token cases.
 
-if (-not $Secrets) {
-    $Secrets = Read-PromptChoice `
-        'Where should the FORGE_PACKAGE_TOKEN and FORGE_ACCESS_TOKEN be stored?' `
-        'keystore' `
-        @('keystore', 'gcp')
+function Test-ExistingKeystoreTokens {
+    try {
+        $pkg = [CredmanV2]::Read($PatVar)
+        $acc = [CredmanV2]::Read($TokVar)
+        return ($pkg -and $acc)
+    } catch {
+        return $false
+    }
+}
+
+if (-not $Secrets -and -not $ForceTokens) {
+    if (Test-ExistingKeystoreTokens) {
+        $Secrets = 'keystore'
+        Write-Host ''
+        Write-Host '  Detected existing FORGE_PACKAGE_TOKEN + FORGE_ACCESS_TOKEN' -ForegroundColor Cyan
+        Write-Host '  in Windows Credential Manager — skipping backend prompt and' -ForegroundColor Cyan
+        Write-Host '  token prompts. Running in HEAL mode (reusing stored tokens,' -ForegroundColor Cyan
+        Write-Host '  sweeping stale state, reinstalling). Use -ForceTokens to' -ForegroundColor Cyan
+        Write-Host '  rotate.' -ForegroundColor Cyan
+    } else {
+        $Secrets = Read-PromptChoice `
+            'Where should the FORGE_PACKAGE_TOKEN and FORGE_ACCESS_TOKEN be stored?' `
+            'keystore' `
+            @('keystore', 'gcp')
+    }
 }
 
 Write-Step "Step 2 — secrets backend: $Secrets"
@@ -618,6 +657,50 @@ if (Get-Module -ListAvailable -Name BurntToast) {
         Write-WarnMsg "BurntToast install failed: $($_.Exception.Message)"
         Write-WarnMsg '  Auto-update statusline nudge will still work; only OS toasts are lost.'
         Write-WarnMsg '  To retry later: pwsh -Command "Install-Module -Name BurntToast -Scope CurrentUser -Force"'
+    }
+}
+
+# ── Step 6.9: nuke stale plugin state before postinstall ─────────────────────
+# Belt-and-suspenders for the pre-0.6.0 bin-shim collision trap.
+#
+# Scenario: a client on <= 0.5.29 runs install.ps1 to heal a broken
+# install. Step 5 already swept both packages + shims and installed a
+# fresh scoped @bigbrainforge/forge-plugin. But ~/.claude/commands/forge/
+# still contains the STALE setup.md / help.md / new.md / etc. from the
+# deprecated 0.5.x binary that wrote them. install.js's `copyDir` does
+# overwrite matching files, but any file present in the OLD tree yet
+# absent in the NEW one would linger — and for upgrades across major-
+# structure changes, the safest default is to start empty.
+#
+# We also clear ~/.claude/forge/VERSION + update-state.json so the
+# postinstall writes them from scratch (the v0.6.0+ install.js reads
+# package.json's version correctly, but clearing the old file eliminates
+# any chance of a reader picking up a stale cached value from a prior
+# session that held a file handle).
+#
+# ~/.claude/forge/bin/ is replaced by install.js's copy loop on every
+# run, so we let it handle that to avoid interfering with any running
+# Node process holding a file handle. Backups (~/.claude/forge/backup/)
+# are left intact — they're rollback material, not stale state.
+
+Write-Step 'Step 6.9 — clear stale plugin state (idempotent re-run safety)'
+
+$claudeDir = Join-Path $env:USERPROFILE '.claude'
+$forgeDir = Join-Path $claudeDir 'forge'
+$cmdsDir = Join-Path $claudeDir 'commands\forge'
+
+foreach ($stalePath in @(
+    $cmdsDir,
+    (Join-Path $forgeDir 'VERSION'),
+    (Join-Path $forgeDir 'update-state.json')
+)) {
+    if (Test-Path -LiteralPath $stalePath) {
+        try {
+            Remove-Item -LiteralPath $stalePath -Recurse -Force -ErrorAction Stop
+            Write-Ok "cleared $stalePath"
+        } catch {
+            Write-WarnMsg "could not clear $stalePath (the postinstall will overwrite): $($_.Exception.Message)"
+        }
     }
 }
 

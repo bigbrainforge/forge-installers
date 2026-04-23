@@ -44,6 +44,7 @@ GCP_PACKAGE_SECRET="$GCP_PACKAGE_SECRET_DEFAULT"
 GCP_ACCESS_SECRET="$GCP_ACCESS_SECRET_DEFAULT"
 SKIP_VERIFY=false
 NON_INTERACTIVE=false
+FORCE_TOKENS=false
 
 usage() {
   cat <<EOF
@@ -68,6 +69,9 @@ Options:
                                   (default: ${GCP_ACCESS_SECRET_DEFAULT})
   --non-interactive               Never prompt — require all needed flags
   --skip-verify                   Skip the final plugin-file verification
+  --force-tokens                  Force fresh token prompts even if existing
+                                  tokens are detected in keystore / GCP (for
+                                  rotation, or when stored tokens are bad)
   -h, --help                      Show this help
 
 For --secrets=gcp, pre-populate the two secrets in your GCP project:
@@ -84,6 +88,7 @@ for arg in "$@"; do
     --gcp-access-secret=*) GCP_ACCESS_SECRET="${arg#*=}";;
     --skip-verify)        SKIP_VERIFY=true;;
     --non-interactive)    NON_INTERACTIVE=true;;
+    --force-tokens)       FORCE_TOKENS=true;;
     -h|--help)            usage; exit 0;;
     *)                    printf 'unknown arg: %s\n\n' "$arg" >&2; usage; exit 2;;
   esac
@@ -287,8 +292,43 @@ append_if_missing 'export NVM_DIR="$HOME/.nvm"' "$PROFILE"
 append_if_missing '[ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh"' "$PROFILE"
 
 # ── Step 2: choose secrets backend ───────────────────────────────────────────
+#
+# Self-heal on re-run: if the user already has FORGE_PACKAGE_TOKEN AND
+# FORGE_ACCESS_TOKEN in the OS keystore (from a prior install), skip the
+# backend prompt and auto-select `keystore`. This makes the installer
+# zero-prompt for repeat runs — a pilot hitting the pre-0.6.0 bin-shim
+# collision can re-run `./install.sh` and the installer heals state
+# (sweeps shims, reinstalls scoped package, nukes stale command markdown,
+# re-runs postinstall) without asking for anything.
+#
+# --force-tokens bypasses the detection for rotation / bad-token cases.
 
-# Prompt for backend if not supplied via --secrets=...
+detect_existing_keystore_tokens() {
+  # Returns 0 if both FORGE_PACKAGE_TOKEN + FORGE_ACCESS_TOKEN exist in
+  # the platform's keystore. Non-zero otherwise.
+  if have security; then
+    security find-generic-password -s FORGE_PACKAGE_TOKEN -a "$USER" -w >/dev/null 2>&1 || return 1
+    security find-generic-password -s FORGE_ACCESS_TOKEN  -a "$USER" -w >/dev/null 2>&1 || return 1
+    return 0
+  elif have secret-tool; then
+    secret-tool lookup service FORGE_PACKAGE_TOKEN >/dev/null 2>&1 || return 1
+    secret-tool lookup service FORGE_ACCESS_TOKEN  >/dev/null 2>&1 || return 1
+    return 0
+  fi
+  return 1
+}
+
+if [ -z "$SECRETS_BACKEND" ] && [ "$FORCE_TOKENS" = "false" ]; then
+  if detect_existing_keystore_tokens; then
+    SECRETS_BACKEND="keystore"
+    printf '\n  \033[1;36mDetected existing FORGE_PACKAGE_TOKEN + FORGE_ACCESS_TOKEN in OS\n'
+    printf '  keystore — skipping backend prompt and token prompts. Running in\n'
+    printf '  HEAL mode (reusing stored tokens, sweeping stale state, reinstalling).\n'
+    printf '  Use --force-tokens to rotate.\033[0m\n'
+  fi
+fi
+
+# Prompt for backend if not supplied via --secrets=... and not auto-detected
 if [ -z "$SECRETS_BACKEND" ]; then
   SECRETS_BACKEND=$(prompt_choice \
     "Where should the FORGE_PACKAGE_TOKEN and FORGE_ACCESS_TOKEN be stored?" \
@@ -393,6 +433,42 @@ else
 fi
 
 [ -n "${FORGE_ACCESS_TOKEN:-}" ] || warn "FORGE_ACCESS_TOKEN not populated in this shell (will be in new shells after profile reload)"
+
+# ── Step 6.9: nuke stale plugin state before postinstall ─────────────────────
+# Belt-and-suspenders for the pre-0.6.0 bin-shim collision trap.
+#
+# Scenario: a client on <= 0.5.29 runs install.sh to heal a broken install.
+# Step 5 already swept both packages + shims and installed a fresh scoped
+# @bigbrainforge/forge-plugin. But ~/.claude/commands/forge/ may still
+# contain stale setup.md / help.md / etc. from the deprecated 0.5.x binary
+# that wrote them. install.js's copyDir does overwrite matching files,
+# but any file present in the OLD tree yet absent in the NEW one would
+# linger — so we start from empty to guarantee a clean slate across major
+# structure changes.
+#
+# We also clear ~/.claude/forge/VERSION + update-state.json so the
+# postinstall writes them from scratch.
+#
+# ~/.claude/forge/bin/ is replaced by install.js's copy loop on every run
+# — we let it handle that to avoid interfering with any running Node
+# process holding a file handle. Backups under ~/.claude/forge/backup/
+# are rollback material and left intact.
+
+step "Step 6.9 — clear stale plugin state (idempotent re-run safety)"
+
+for stale_path in \
+  "$HOME/.claude/commands/forge" \
+  "$HOME/.claude/forge/VERSION" \
+  "$HOME/.claude/forge/update-state.json"
+do
+  if [ -e "$stale_path" ]; then
+    if rm -rf "$stale_path" 2>/dev/null; then
+      ok "cleared $stale_path"
+    else
+      warn "could not clear $stale_path (the postinstall will overwrite)"
+    fi
+  fi
+done
 
 # ── Step 7: run forge-plugin ─────────────────────────────────────────────────
 # Copies slash commands, hooks, statusline, and utility scripts into

@@ -389,56 +389,30 @@ Common causes: expired `gcloud auth login` session (re-run it), wrong project, m
 
 ### Version mismatch after `/forge:setup update` — upgrade from < 0.6.0
 
-**Symptom.** After upgrading from a pre-0.6.0 install, `cat ~/.claude/forge/VERSION` shows an old version (e.g. `0.5.19`) even though `npm list -g @bigbrainforge/forge-plugin` shows the new one (e.g. `0.6.0`). Running `forge-plugin` also reports the old version.
+**Symptom.** After upgrading from a pre-0.6.0 install, `cat ~/.claude/forge/VERSION` shows an old version (e.g. `0.5.19`) even though `npm list -g @bigbrainforge/forge-plugin` shows the new one. `/forge:setup update` reports "already at latest" even when you're clearly not.
 
-**Cause.** Bin-shim collision between the deprecated unscoped `forge-plugin` package (on npmjs.com, frozen since PR #230) and the current scoped `@bigbrainforge/forge-plugin` (on GH Packages). Both register a `forge-plugin` bin shim; whichever was installed last wins the PATH lookup. Pre-0.6.0 clients that had both packages installed would hit this on every update because the pre-0.6.0 `/forge:setup update` procedure didn't sweep the deprecated shim before `npm install`. From 0.6.0 onward the update flow sweeps automatically, so this is a one-time bootstrap issue.
+**Cause.** Bin-shim collision between the deprecated unscoped `forge-plugin` package (on npmjs.com, frozen since PR #230) and the current scoped `@bigbrainforge/forge-plugin` (on GH Packages). Both register a `forge-plugin` bin shim; whichever was installed last wins the PATH lookup. Pre-0.6.0 clients that had both packages installed would hit this on every update because the pre-0.6.0 `/forge:setup update` procedure didn't sweep the deprecated shim before `npm install`.
 
-**Fix.** Run the cleanup subcommand, then reinstall:
-
-```bash
-# macOS / Linux
-forge-plugin --cleanup
-npm install -g --ignore-scripts @bigbrainforge/forge-plugin@latest
-forge-plugin
-```
+**Fix — re-run the installer.** From 0.6.2 onward the installer is fully self-healing. It auto-detects your existing tokens in the keystore, skips every prompt, does the aggressive sweep, reinstalls the scoped package, clears stale command markdown, and re-runs the postinstaller. One command, zero prompts:
 
 ```powershell
 # Windows (PowerShell 7+)
-forge-plugin --cleanup
-npm install -g --ignore-scripts @bigbrainforge/forge-plugin@latest
-forge-plugin
-```
-
-**If `forge-plugin --cleanup` itself doesn't exist yet** (the shim on PATH is the deprecated 0.5.x binary that predates the flag), do the sweep manually:
-
-```powershell
-# Windows — manual sweep
-npm uninstall -g forge-plugin
-npm uninstall -g @bigbrainforge/forge-plugin
-$npmPrefix = (npm config get prefix).Trim()
-@('forge-plugin', 'forge-plugin.cmd', 'forge-plugin.ps1') | ForEach-Object {
-    Remove-Item -Path (Join-Path $npmPrefix $_) -Force -ErrorAction SilentlyContinue
-    Remove-Item -Path (Join-Path $npmPrefix 'bin' $_) -Force -ErrorAction SilentlyContinue
-}
-Get-Command forge-plugin -ErrorAction SilentlyContinue   # should print nothing
-npm install -g --ignore-scripts @bigbrainforge/forge-plugin@latest
-forge-plugin
+Invoke-WebRequest -Uri https://raw.githubusercontent.com/bigbrainforge/forge-installers/main/install.ps1 -OutFile install.ps1
+.\install.ps1
 ```
 
 ```bash
-# macOS / Linux — manual sweep
-npm uninstall -g forge-plugin
-npm uninstall -g @bigbrainforge/forge-plugin
-NPM_PREFIX=$(npm config get prefix)
-for leaf in forge-plugin forge-plugin.cmd forge-plugin.ps1; do
-  rm -f "$NPM_PREFIX/$leaf" "$NPM_PREFIX/bin/$leaf"
-done
-which forge-plugin || true   # should print nothing
-npm install -g --ignore-scripts @bigbrainforge/forge-plugin@latest
-forge-plugin
+# macOS / Linux
+curl -fsSL https://raw.githubusercontent.com/bigbrainforge/forge-installers/main/install.sh -o install.sh
+chmod +x install.sh
+./install.sh
 ```
 
-**Verify.** After reinstall, `cat ~/.claude/forge/VERSION` must match `npm list -g @bigbrainforge/forge-plugin`. Restart Claude Code so the 0.6.0 SessionStart + Stop hooks load — from there on, auto-update handles every subsequent release.
+The installer will print a **HEAL mode** banner when it auto-detects existing tokens and runs silently from there.
+
+**Verify.** After the installer finishes: `cat ~/.claude/forge/VERSION` must match `npm list -g @bigbrainforge/forge-plugin`. Restart Claude Code so the 0.6.0+ SessionStart + Stop hooks load — from there on, auto-update handles every subsequent release without manual intervention.
+
+**To rotate tokens** (bad / expired): pass `-ForceTokens` (Windows) or `--force-tokens` (macOS/Linux) to force fresh prompts.
 
 ---
 
