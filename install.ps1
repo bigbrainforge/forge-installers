@@ -289,36 +289,73 @@ function Install-TokenInGcp([string]$VarName, [string]$GcpSecret) {
 }
 
 # ── Step 1: Node 22 via nvm-windows ──────────────────────────────────────────
+#
+# Fast path: if Node $NodeMajor is already on PATH and working, skip nvm
+# entirely. Clients with their own Node install (MSI, corp-managed, or
+# an nvm4w setup that's already active in this shell) don't need us to
+# touch their Node setup. This is what makes re-running the installer
+# non-destructive for healthy installs.
+#
+# Slow path: install nvm-windows via winget, install Node $NodeMajor
+# via nvm, activate it, then refresh $env:Path from system env vars so
+# the NEW Node install is visible to the REST of this PowerShell
+# session. Without the PATH refresh, every subsequent `node` / `npm`
+# invocation would fail with "term not recognized" under
+# $ErrorActionPreference='Stop' and terminate the script. The refresh
+# is the same trick we use after winget-install nvm itself.
+
+# Helper: safely read node version without tripping $ErrorActionPreference='Stop'.
+function Get-NodeVersionSafe {
+    if (-not (Test-Command 'node')) { return $null }
+    try {
+        $ver = & node --version 2>$null
+        if ($LASTEXITCODE -eq 0) { return $ver }
+    } catch { }
+    return $null
+}
 
 Write-Step "Step 1 — Node $NodeMajor LTS"
 
-if (-not (Test-Command 'nvm')) {
-    Write-InfoMsg 'nvm-windows not found'
-    if (Test-Command 'winget') {
-        Write-InfoMsg 'installing via winget...'
-        winget install CoreyButler.NVMforWindows --accept-package-agreements --accept-source-agreements | Out-Null
-        # winget updates PATH but current session must refresh
-        $env:Path = [System.Environment]::GetEnvironmentVariable('Path', 'Machine') + ';' + [System.Environment]::GetEnvironmentVariable('Path', 'User')
-        if (-not (Test-Command 'nvm')) {
-            Die 'nvm installed but not on PATH. Close this PowerShell, open a fresh one, and re-run.'
+$existingNode = Get-NodeVersionSafe
+if ($existingNode -and $existingNode.StartsWith("v$NodeMajor")) {
+    Write-Ok "Node $existingNode already active — skipping nvm (re-run safe, nothing to install)"
+} else {
+    if (-not (Test-Command 'nvm')) {
+        Write-InfoMsg 'nvm-windows not found'
+        if (Test-Command 'winget') {
+            Write-InfoMsg 'installing via winget...'
+            winget install CoreyButler.NVMforWindows --accept-package-agreements --accept-source-agreements | Out-Null
+            # winget updates PATH but current session must refresh
+            $env:Path = [System.Environment]::GetEnvironmentVariable('Path', 'Machine') + ';' + [System.Environment]::GetEnvironmentVariable('Path', 'User')
+            if (-not (Test-Command 'nvm')) {
+                Die 'nvm installed but not on PATH. Close this PowerShell, open a fresh one, and re-run.'
+            }
+            Write-Ok 'nvm-windows installed'
+        } else {
+            Die 'nvm-windows not installed and winget unavailable. Install nvm-windows manually from https://github.com/coreybutler/nvm-windows/releases, then re-run.'
         }
-        Write-Ok 'nvm-windows installed'
-    } else {
-        Die 'nvm-windows not installed and winget unavailable. Install nvm-windows manually from https://github.com/coreybutler/nvm-windows/releases, then re-run.'
     }
-}
 
-$installed = & nvm list 2>$null | Select-String "\b$NodeMajor\." -Quiet
-if (-not $installed) {
-    Write-InfoMsg "installing Node $NodeMajor LTS"
-    & nvm install $NodeMajor | Out-Null
-}
-& nvm use $NodeMajor | Out-Null
+    $installed = & nvm list 2>$null | Select-String "\b$NodeMajor\." -Quiet
+    if (-not $installed) {
+        Write-InfoMsg "installing Node $NodeMajor LTS"
+        & nvm install $NodeMajor | Out-Null
+    }
+    & nvm use $NodeMajor | Out-Null
 
-$nodeVersion = (node --version) 2>$null
-if (-not $nodeVersion) { Die 'node not on PATH after nvm use — open a fresh PowerShell and re-run' }
-if (-not $nodeVersion.StartsWith("v$NodeMajor")) { Die "expected Node $NodeMajor, got $nodeVersion" }
-Write-Ok "Node $nodeVersion active"
+    # Refresh PATH so the just-activated Node is visible to `node`/`npm`
+    # invocations downstream in this session. Without this, `nvm use`
+    # updates the symlink but the shell's PATH cache doesn't include
+    # `C:\nvm4w\nodejs` until the next shell. Cheap and idempotent.
+    $env:Path = [System.Environment]::GetEnvironmentVariable('Path', 'Machine') + ';' + [System.Environment]::GetEnvironmentVariable('Path', 'User')
+
+    $nodeVersion = Get-NodeVersionSafe
+    if (-not $nodeVersion) {
+        Die 'node not on PATH after nvm use + PATH refresh. Close this PowerShell, open a fresh one, and re-run the installer.'
+    }
+    if (-not $nodeVersion.StartsWith("v$NodeMajor")) { Die "expected Node $NodeMajor, got $nodeVersion" }
+    Write-Ok "Node $nodeVersion active"
+}
 
 # ── Step 2: choose secrets backend ───────────────────────────────────────────
 #

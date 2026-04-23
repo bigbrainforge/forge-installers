@@ -393,20 +393,24 @@ Common causes: expired `gcloud auth login` session (re-run it), wrong project, m
 
 **Cause.** Bin-shim collision between the deprecated unscoped `forge-plugin` package (on npmjs.com, frozen since PR #230) and the current scoped `@bigbrainforge/forge-plugin` (on GH Packages). Both register a `forge-plugin` bin shim; whichever was installed last wins the PATH lookup. Pre-0.6.0 clients that had both packages installed would hit this on every update because the pre-0.6.0 `/forge:setup update` procedure didn't sweep the deprecated shim before `npm install`.
 
-**Fix — re-run the installer.** From 0.6.2 onward the installer is fully self-healing. It auto-detects your existing tokens in the keystore, skips every prompt, does the aggressive sweep, reinstalls the scoped package, clears stale command markdown, and re-runs the postinstaller. One command, zero prompts:
+**Fix — re-run the installer.** From 0.6.2 onward the installer is fully self-healing. It auto-detects your existing tokens in the keystore, skips every prompt, does the aggressive sweep, reinstalls the scoped package, clears stale command markdown, and re-runs the postinstaller. One paste, zero prompts:
 
 ```powershell
-# Windows (PowerShell 7+)
-Invoke-WebRequest -Uri https://raw.githubusercontent.com/bigbrainforge/forge-installers/main/install.ps1 -OutFile install.ps1
+# Windows (PowerShell 7+) — always fetch fresh installer, never a stale local copy
+Remove-Item .\install.ps1 -Force -ErrorAction SilentlyContinue
+Invoke-WebRequest -Uri https://raw.githubusercontent.com/bigbrainforge/forge-installers/main/install.ps1 -OutFile install.ps1 -UseBasicParsing
 .\install.ps1
 ```
 
 ```bash
-# macOS / Linux
+# macOS / Linux — always fetch fresh installer, never a stale local copy
+rm -f install.sh
 curl -fsSL https://raw.githubusercontent.com/bigbrainforge/forge-installers/main/install.sh -o install.sh
 chmod +x install.sh
 ./install.sh
 ```
+
+The `Remove-Item` / `rm -f` first line is important: without it, a prior run's local `install.ps1` / `install.sh` can linger even though `Invoke-WebRequest` / `curl` should overwrite — observed in the field when cached / read-only file attributes prevent the overwrite silently. Always fetch fresh.
 
 The installer will print a **HEAL mode** banner when it auto-detects existing tokens and runs silently from there.
 

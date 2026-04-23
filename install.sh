@@ -266,26 +266,45 @@ store_token_in_gcp() {
 }
 
 # ── Step 1: Node 22 via nvm ──────────────────────────────────────────────────
+#
+# Fast path: if Node $NODE_MAJOR is already active on PATH, skip nvm
+# entirely. Clients with their own Node install (Homebrew, system
+# package manager, existing nvm activation via shell profile) don't
+# need us to touch their Node setup. Makes re-running the installer
+# non-destructive for healthy installs.
 
 step "Step 1 — Node ${NODE_MAJOR} LTS"
 
-export NVM_DIR="${NVM_DIR:-$HOME/.nvm}"
-
-if [ ! -s "$NVM_DIR/nvm.sh" ]; then
-  info "nvm not found — installing to $NVM_DIR"
-  curl -fsSL https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.1/install.sh | bash
+existing_node=""
+if have node; then
+  existing_node=$(node --version 2>/dev/null || true)
 fi
 
-# shellcheck source=/dev/null
-. "$NVM_DIR/nvm.sh"
+if [ -n "$existing_node" ] && echo "$existing_node" | grep -q "^v${NODE_MAJOR}\\."; then
+  ok "Node ${existing_node} already active — skipping nvm (re-run safe, nothing to install)"
+else
+  export NVM_DIR="${NVM_DIR:-$HOME/.nvm}"
 
-if ! nvm ls "$NODE_MAJOR" >/dev/null 2>&1; then
-  info "installing Node ${NODE_MAJOR} LTS (this may take a minute)"
-  nvm install "$NODE_MAJOR" >/dev/null
+  if [ ! -s "$NVM_DIR/nvm.sh" ]; then
+    info "nvm not found — installing to $NVM_DIR"
+    curl -fsSL https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.1/install.sh | bash
+  fi
+
+  # shellcheck source=/dev/null
+  . "$NVM_DIR/nvm.sh"
+
+  if ! nvm ls "$NODE_MAJOR" >/dev/null 2>&1; then
+    info "installing Node ${NODE_MAJOR} LTS (this may take a minute)"
+    nvm install "$NODE_MAJOR" >/dev/null
+  fi
+  nvm use "$NODE_MAJOR" >/dev/null
+  nvm alias default "$NODE_MAJOR" >/dev/null 2>&1 || true
+
+  if ! have node; then
+    die "node not on PATH after nvm use. Open a fresh shell and re-run the installer."
+  fi
+  ok "Node $(node --version) active"
 fi
-nvm use "$NODE_MAJOR" >/dev/null
-nvm alias default "$NODE_MAJOR" >/dev/null 2>&1 || true
-ok "Node $(node --version) active"
 
 PROFILE=$(detect_shell_profile)
 append_if_missing 'export NVM_DIR="$HOME/.nvm"' "$PROFILE"
