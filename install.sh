@@ -322,48 +322,9 @@ append_if_missing '[ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh"' "$PROFILE"
 #
 # --force-tokens bypasses the detection for rotation / bad-token cases.
 
-migrate_legacy_keychain_entry() {
-  # Non-destructive migration: if a legacy-named token exists in the
-  # OS keystore but the current-named one does not, copy the value
-  # across under the new name. Legacy entries stay in place
-  # (harmless). Returns 0 if a migration occurred.
-  #
-  # Legacy name map:
-  #   GH_FORGE_PACKAGES_PAT -> FORGE_PACKAGE_TOKEN
-  #   FORGE_CODEX_TOKEN     -> FORGE_ACCESS_TOKEN
-  local legacy_name=$1 current_name=$2 legacy_value
-  if have security; then
-    # If current already has a value, nothing to migrate
-    if security find-generic-password -s "$current_name" -a "$USER" -w >/dev/null 2>&1; then
-      return 1
-    fi
-    legacy_value=$(security find-generic-password -s "$legacy_name" -a "$USER" -w 2>/dev/null || echo "")
-    [ -n "$legacy_value" ] || return 1
-    security add-generic-password -U -s "$current_name" -a "$USER" -w "$legacy_value"
-    info "migrated $legacy_name -> $current_name in Keychain (legacy entry left in place, harmless)"
-    unset legacy_value
-    return 0
-  elif have secret-tool; then
-    if secret-tool lookup service "$current_name" >/dev/null 2>&1; then
-      return 1
-    fi
-    legacy_value=$(secret-tool lookup service "$legacy_name" 2>/dev/null || echo "")
-    [ -n "$legacy_value" ] || return 1
-    printf '%s' "$legacy_value" | secret-tool store --label="$current_name" service "$current_name"
-    info "migrated $legacy_name -> $current_name in libsecret (legacy entry left in place, harmless)"
-    unset legacy_value
-    return 0
-  fi
-  return 1
-}
-
 detect_existing_keystore_tokens() {
   # Returns 0 if both FORGE_PACKAGE_TOKEN + FORGE_ACCESS_TOKEN exist in
-  # the platform's keystore (after any needed legacy-name migration).
-  # Non-zero otherwise.
-  migrate_legacy_keychain_entry GH_FORGE_PACKAGES_PAT FORGE_PACKAGE_TOKEN || true
-  migrate_legacy_keychain_entry FORGE_CODEX_TOKEN      FORGE_ACCESS_TOKEN  || true
-
+  # the platform's keystore. Non-zero otherwise.
   if have security; then
     security find-generic-password -s FORGE_PACKAGE_TOKEN -a "$USER" -w >/dev/null 2>&1 || return 1
     security find-generic-password -s FORGE_ACCESS_TOKEN  -a "$USER" -w >/dev/null 2>&1 || return 1
