@@ -633,10 +633,21 @@ Write-InfoMsg 'Removing any stale forge-plugin shims from prior installs...'
 & npm uninstall -g forge-plugin --silent 2>$null | Out-Null
 & npm uninstall -g $PackageName --silent 2>$null | Out-Null
 
+# Sweep shim directories. `npm config get prefix` covers the currently-
+# active Node (e.g. nvm4w's). But a common failure mode is stale shims
+# from an earlier Node install living in `%APPDATA%\npm` (classic Windows
+# default, used by the system Node installer). If that directory is on
+# PATH ahead of the current prefix — which it often is — the old
+# `forge-plugin.cmd` there wins PATH resolution and writes 0.5.19 content
+# into ~/.claude/ every time install.ps1 runs Step 7. Sweep both.
+$shimDirs = [System.Collections.Generic.List[string]]::new()
 $npmPrefix = (& npm config get prefix 2>$null).Trim()
-if ($npmPrefix) {
+if ($npmPrefix) { [void]$shimDirs.Add($npmPrefix) }
+$roamingNpm = Join-Path $env:APPDATA 'npm'
+if (Test-Path -LiteralPath $roamingNpm) { [void]$shimDirs.Add($roamingNpm) }
+foreach ($dir in ($shimDirs | Select-Object -Unique)) {
     foreach ($leaf in @('forge-plugin', 'forge-plugin.cmd', 'forge-plugin.ps1')) {
-        $stale = Join-Path $npmPrefix $leaf
+        $stale = Join-Path $dir $leaf
         if (Test-Path -LiteralPath $stale) {
             try {
                 Remove-Item -LiteralPath $stale -Force -ErrorAction Stop
