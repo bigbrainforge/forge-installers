@@ -451,7 +451,7 @@ printf '<new-value>' | gcloud secrets versions add FORGE_PACKAGE_TOKEN --data-fi
 | Recover from bin-shim collision (pre-0.6.0 upgrades) | `forge-plugin --cleanup` then reinstall |
 | Uninstall | `forge-plugin --uninstall` |
 | Verify install | `ls ~/.claude/commands/forge/` + `cat ~/.claude/forge/VERSION` |
-| In Claude Code | `/forge:help`, `/forge:new`, `/forge:status`, `/forge:continue`, `/forge:complete` |
+| In Claude Code | `/forge:help`, `/forge:new`, `/forge:status`, `/forge:resume`, `/forge:done` |
 
 ---
 
