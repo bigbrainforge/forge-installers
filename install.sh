@@ -27,7 +27,10 @@
 set -euo pipefail
 
 SCRIPT_VERSION="0.2.0"
-NODE_MAJOR=22
+# Exact patch pin — same version on dev box, CI, and clients. Eliminates the
+# "works locally, fails on CI" class of drift caused by major-only pins
+# picking different patches. Bump in lockstep with .nvmrc and CI workflows.
+NODE_VERSION="22.22.2"
 PACKAGE_NAME="@bigbrainforge/forge-plugin"
 REGISTRY_URL="https://npm.pkg.github.com"
 REGISTRY_HOST="npm.pkg.github.com"
@@ -265,23 +268,25 @@ store_token_in_gcp() {
   export "${var_name}"="$(gcloud secrets versions access latest --secret="$gcp_secret" --project="$GCP_PROJECT")"
 }
 
-# ── Step 1: Node 22 via nvm ──────────────────────────────────────────────────
+# ── Step 1: Node $NODE_VERSION via nvm ───────────────────────────────────────
 #
-# Fast path: if Node $NODE_MAJOR is already active on PATH, skip nvm
-# entirely. Clients with their own Node install (Homebrew, system
-# package manager, existing nvm activation via shell profile) don't
-# need us to touch their Node setup. Makes re-running the installer
-# non-destructive for healthy installs.
+# Fast path: if exactly Node $NODE_VERSION is already active on PATH, skip
+# nvm entirely. Re-runs are non-destructive for healthy installs.
+#
+# Slow path: nvm install $NODE_VERSION — idempotent, won't re-download if
+# already present. Pinning to the exact patch ensures every Forge client
+# runs the same Node binary the sealed bundle was built against (Node ABI
+# 127 for 22.x — tree-sitter prebuilds match).
 
-step "Step 1 — Node ${NODE_MAJOR} LTS"
+step "Step 1 — Node ${NODE_VERSION}"
 
 existing_node=""
 if have node; then
   existing_node=$(node --version 2>/dev/null || true)
 fi
 
-if [ -n "$existing_node" ] && echo "$existing_node" | grep -q "^v${NODE_MAJOR}\\."; then
-  ok "Node ${existing_node} already active — skipping nvm (re-run safe, nothing to install)"
+if [ "$existing_node" = "v${NODE_VERSION}" ]; then
+  ok "Node ${existing_node} already active (exact pin match) — skipping nvm"
 else
   export NVM_DIR="${NVM_DIR:-$HOME/.nvm}"
 
@@ -293,17 +298,21 @@ else
   # shellcheck source=/dev/null
   . "$NVM_DIR/nvm.sh"
 
-  if ! nvm ls "$NODE_MAJOR" >/dev/null 2>&1; then
-    info "installing Node ${NODE_MAJOR} LTS (this may take a minute)"
-    nvm install "$NODE_MAJOR" >/dev/null
+  if ! nvm ls "$NODE_VERSION" >/dev/null 2>&1; then
+    info "installing Node ${NODE_VERSION} (this may take a minute)"
+    nvm install "$NODE_VERSION" >/dev/null
   fi
-  nvm use "$NODE_MAJOR" >/dev/null
-  nvm alias default "$NODE_MAJOR" >/dev/null 2>&1 || true
+  nvm use "$NODE_VERSION" >/dev/null
+  nvm alias default "$NODE_VERSION" >/dev/null 2>&1 || true
 
   if ! have node; then
     die "node not on PATH after nvm use. Open a fresh shell and re-run the installer."
   fi
-  ok "Node $(node --version) active"
+  current_node=$(node --version 2>/dev/null || true)
+  if [ "$current_node" != "v${NODE_VERSION}" ]; then
+    die "Node ${current_node} active but pin requires v${NODE_VERSION}. Run: nvm use ${NODE_VERSION}"
+  fi
+  ok "Node ${current_node} active (exact pin)"
 fi
 
 PROFILE=$(detect_shell_profile)

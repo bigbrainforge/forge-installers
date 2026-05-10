@@ -77,7 +77,10 @@ param(
 
 $ErrorActionPreference = 'Stop'
 $ScriptVersion = '0.2.0'
-$NodeMajor = 22
+# Exact patch pin — same version on dev box, CI, and clients. Eliminates the
+# "works locally, fails on CI" class of drift caused by major-only pins
+# picking different patches. Bump in lockstep with .nvmrc and CI workflows.
+$NodeVersion = '22.22.2'
 $PackageName = '@bigbrainforge/forge-plugin'
 $RegistryUrl = 'https://npm.pkg.github.com'
 $RegistryHost = 'npm.pkg.github.com'
@@ -288,21 +291,19 @@ function Install-TokenInGcp([string]$VarName, [string]$GcpSecret) {
     Set-Item -Path "Env:$VarName" -Value (& gcloud secrets versions access latest --secret=$GcpSecret --project=$GcpProject)
 }
 
-# ── Step 1: Node 22 via nvm-windows ──────────────────────────────────────────
+# ── Step 1: Node $NodeVersion via nvm-windows ────────────────────────────────
 #
-# Fast path: if Node $NodeMajor is already on PATH and working, skip nvm
-# entirely. Clients with their own Node install (MSI, corp-managed, or
-# an nvm4w setup that's already active in this shell) don't need us to
-# touch their Node setup. This is what makes re-running the installer
-# non-destructive for healthy installs.
+# Fast path: if exactly Node $NodeVersion is on PATH, skip nvm entirely.
+# Clients with their own matching Node install (MSI, corp-managed, or an
+# nvm4w setup) don't need us to touch their setup. Re-runs are non-destructive
+# for healthy installs.
 #
-# Slow path: install nvm-windows via winget, install Node $NodeMajor
-# via nvm, activate it, then refresh $env:Path from system env vars so
-# the NEW Node install is visible to the REST of this PowerShell
-# session. Without the PATH refresh, every subsequent `node` / `npm`
-# invocation would fail with "term not recognized" under
-# $ErrorActionPreference='Stop' and terminate the script. The refresh
-# is the same trick we use after winget-install nvm itself.
+# Slow path: install nvm-windows via winget if missing, then `nvm install
+# $NodeVersion` (idempotent — won't re-download if present), `nvm use
+# $NodeVersion`, refresh $env:Path so the just-activated Node is visible
+# downstream in this session. Pinning to the exact patch ensures every
+# Forge client runs the same Node binary the sealed bundle was built
+# against (Node ABI 127 for 22.x — tree-sitter prebuilds match).
 
 # Helper: safely read node version without tripping $ErrorActionPreference='Stop'.
 function Get-NodeVersionSafe {
@@ -314,11 +315,11 @@ function Get-NodeVersionSafe {
     return $null
 }
 
-Write-Step "Step 1 — Node $NodeMajor LTS"
+Write-Step "Step 1 — Node $NodeVersion"
 
 $existingNode = Get-NodeVersionSafe
-if ($existingNode -and $existingNode.StartsWith("v$NodeMajor")) {
-    Write-Ok "Node $existingNode already active — skipping nvm (re-run safe, nothing to install)"
+if ($existingNode -eq "v$NodeVersion") {
+    Write-Ok "Node $existingNode already active (exact pin match) — skipping nvm"
 } else {
     if (-not (Test-Command 'nvm')) {
         Write-InfoMsg 'nvm-windows not found'
@@ -336,12 +337,12 @@ if ($existingNode -and $existingNode.StartsWith("v$NodeMajor")) {
         }
     }
 
-    $installed = & nvm list 2>$null | Select-String "\b$NodeMajor\." -Quiet
+    $installed = & nvm list 2>$null | Select-String -Pattern ([regex]::Escape($NodeVersion)) -Quiet
     if (-not $installed) {
-        Write-InfoMsg "installing Node $NodeMajor LTS"
-        & nvm install $NodeMajor | Out-Null
+        Write-InfoMsg "installing Node $NodeVersion"
+        & nvm install $NodeVersion | Out-Null
     }
-    & nvm use $NodeMajor | Out-Null
+    & nvm use $NodeVersion | Out-Null
 
     # Refresh PATH so the just-activated Node is visible to `node`/`npm`
     # invocations downstream in this session. Without this, `nvm use`
@@ -353,8 +354,8 @@ if ($existingNode -and $existingNode.StartsWith("v$NodeMajor")) {
     if (-not $nodeVersion) {
         Die 'node not on PATH after nvm use + PATH refresh. Close this PowerShell, open a fresh one, and re-run the installer.'
     }
-    if (-not $nodeVersion.StartsWith("v$NodeMajor")) { Die "expected Node $NodeMajor, got $nodeVersion" }
-    Write-Ok "Node $nodeVersion active"
+    if ($nodeVersion -ne "v$NodeVersion") { Die "expected Node v$NodeVersion exactly, got $nodeVersion" }
+    Write-Ok "Node $nodeVersion active (exact pin)"
 }
 
 # ── Step 2: choose secrets backend ───────────────────────────────────────────
