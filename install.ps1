@@ -15,7 +15,7 @@
       - Plugin-file verification
 
     The plugin is a standalone artifact — it runs against the deployed Forge
-    MCP server and does not require the `forge` CLI, codex, or shield to be
+    MCP server and does not require the `forge` CLI, atlas, or shield to be
     installed locally. Claude Code must already be installed.
 
     Re-run is safe — all operations are idempotent.
@@ -814,7 +814,7 @@ Write-Host '    3. In Claude Code, run:  /forge:help'
 Write-Host '    4. Start your first session:  /forge:new'
 Write-Host ''
 Write-Host '  The plugin runs against your Forge MCP endpoint. No local CLI needed —'
-Write-Host '  codex indexing is handled centrally by the Forge team.'
+Write-Host '  atlas indexing is handled centrally by the Forge team.'
 Write-Host ''
 Write-Host '  Troubleshooting: see client-install.md, or re-run this installer —'
 Write-Host '  it is idempotent.'

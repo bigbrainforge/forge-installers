@@ -12,7 +12,7 @@
 #   - Plugin-file verification
 #
 # The plugin is a standalone artifact — it runs against the deployed Forge
-# MCP server and does not require the `forge` CLI, codex, or shield to be
+# MCP server and does not require the `forge` CLI, atlas, or shield to be
 # installed locally. Claude Code must already be installed.
 #
 # Usage:
@@ -553,7 +553,7 @@ $(printf '\033[1;32m✓ Forge plugin installed successfully.\033[0m')
     4. Start your first session:  /forge:new
 
   The plugin runs against your Forge MCP endpoint. No local CLI needed —
-  codex indexing is handled centrally by the Forge team.
+  atlas indexing is handled centrally by the Forge team.
 
   Troubleshooting: see client-install.md, or re-run this installer — it's
   idempotent.

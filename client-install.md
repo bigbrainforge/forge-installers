@@ -5,7 +5,7 @@
 **Runtime:** Node 22 LTS (installer sets this up for you)
 **Requires:** Claude Code already installed ([claude.ai/code](https://claude.ai/code))
 
-The Forge plugin is a Claude Code plugin — it adds slash commands (`/forge:new`, `/forge:status`, etc.), a statusline hook, and registers the Forge MCP server in your Claude Code config. All orchestration runs server-side on the Forge MCP endpoint; the plugin itself is pure configuration and does not run codex indexing locally.
+The Forge plugin is a Claude Code plugin — it adds slash commands (`/forge:new`, `/forge:status`, etc.), a statusline hook, and registers the Forge MCP server in your Claude Code config. All orchestration runs server-side on the Forge MCP endpoint; the plugin itself is pure configuration and does not run atlas indexing locally.
 
 ---
 
@@ -435,6 +435,74 @@ Under GCP-secrets mode, rotating either token is a one-liner:
 printf '<new-value>' | gcloud secrets versions add FORGE_PACKAGE_TOKEN --data-file=- --project=YOUR-PROJECT
 # open a new shell — the rotated value is picked up automatically
 ```
+
+### 7.1 Rotating `FORGE_ACCESS_TOKEN`
+
+**Authoritative procedure: [`docs/as-built/forge-access-token-provenance.md`](../../../docs/as-built/forge-access-token-provenance.md).** That document is the source of truth for the dual-token model (`FORGE_ACCESS_TOKEN` for read/tool calls, `FORGE_INGEST_TOKEN` for atlas push), the three-store invariant for `FORGE_ACCESS_TOKEN` (Cloudflare Worker + GitHub repo secret + every workstation keystore), and the rotation procedure that keeps them consistent. Read it before rotating.
+
+The client-side mechanics for **your workstation copy** are below; the rest of the procedure (Cloudflare server + GitHub repo) lives in the provenance doc to keep one source of truth for the operator runbook.
+
+#### Update your workstation keystore
+
+Pick whichever applies to your OS:
+
+```bash
+# macOS
+security add-generic-password -U -s FORGE_ACCESS_TOKEN -a "$USER" -w
+```
+
+```bash
+# Linux
+secret-tool store --label='Forge access token' service FORGE_ACCESS_TOKEN
+```
+
+```powershell
+# Windows: Control Panel → Credential Manager → Windows Credentials →
+# edit the FORGE_ACCESS_TOKEN generic credential. Or via the GUI's
+# "Add a generic credential" if no entry exists yet.
+```
+
+Then update the env var in your current shell so the new value takes effect immediately (new shells pick up from the keystore automatically):
+
+```bash
+# Bash / zsh
+export FORGE_ACCESS_TOKEN=$(...)        # from your password manager / clipboard
+```
+
+```powershell
+# pwsh — paste literally, do not echo
+$env:FORGE_ACCESS_TOKEN = '<paste here>'
+```
+
+#### Sweep stale legacy entries
+
+The 7.x installer sweeps `FORGE_CODEX_TOKEN` and `forge:FORGE_CODEX_TOKEN` automatically on every run. If you need to run it manually:
+
+```bash
+# Windows
+cmdkey /delete:FORGE_CODEX_TOKEN
+cmdkey /delete:forge:FORGE_CODEX_TOKEN
+
+# macOS
+security delete-generic-password -s FORGE_CODEX_TOKEN
+security delete-generic-password -s forge:FORGE_CODEX_TOKEN
+
+# Linux
+secret-tool clear service FORGE_CODEX_TOKEN
+secret-tool clear service forge:FORGE_CODEX_TOKEN
+```
+
+Missing-entry errors are expected and safe to ignore.
+
+#### Verify
+
+After updating the value:
+
+```bash
+node ~/.claude/forge/bin/stage.js token --verify
+```
+
+This is a real network probe (not a local lookup) — it POSTs to `/api/atlas/ingest` and reports auth status. Procedure details and response classification are in the provenance doc's "Verifying the post-rotation state" section.
 
 ---
 
