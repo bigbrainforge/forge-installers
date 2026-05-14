@@ -5,7 +5,7 @@
 **Runtime:** Node 22 LTS (installer sets this up for you)
 **Requires:** Claude Code already installed ([claude.ai/code](https://claude.ai/code))
 
-The Forge plugin is a Claude Code plugin — it adds slash commands (`/forge:new`, `/forge:status`, etc.), a statusline hook, and registers the Forge MCP server in your Claude Code config. All orchestration runs server-side on the Forge MCP endpoint; the plugin itself is pure configuration and does not run atlas indexing locally.
+The Forge plugin is a Claude Code plugin — it adds slash commands (`/forge:goal`, `/forge:review`, `/forge:done`, `/forge:status`, etc.), a statusline hook, and registers the Forge MCP server in your Claude Code config. All orchestration runs server-side on the Forge MCP endpoint; the plugin itself is pure configuration and does not run atlas indexing locally.
 
 ---
 
@@ -13,12 +13,13 @@ The Forge plugin is a Claude Code plugin — it adds slash commands (`/forge:new
 
 1. [What you'll receive from BigBrain](#1-what-youll-receive-from-bigbrain)
 2. [Quick install (recommended)](#2-quick-install-recommended)
-3. [Secrets backends: OS keystore vs GCP Secret Manager](#3-secrets-backends-os-keystore-vs-gcp-secret-manager)
+3. [Secrets backends: OS keystore vs GCP Secret Manager vs 1Password](#3-secrets-backends-os-keystore-vs-gcp-secret-manager-vs-1password)
 4. [After install — verify the plugin](#4-after-install--verify-the-plugin)
 5. [Manual install (fallback / reference)](#5-manual-install-fallback--reference)
 6. [Troubleshooting](#6-troubleshooting)
 7. [Updating](#7-updating)
 8. [Quick reference](#8-quick-reference)
+9. [Onboarding teammates via a shared 1Password vault](#9-onboarding-teammates-via-a-shared-1password-vault)
 
 ---
 
@@ -31,7 +32,7 @@ Before you start, a BigBrain representative will send you — out-of-band via an
 | `FORGE_PACKAGE_TOKEN` | Read access to the `@bigbrainforge` GitHub Packages registry (`read:packages` scope). Used by `npm install` only. |
 | `FORGE_ACCESS_TOKEN` | Bearer token for your Forge MCP endpoint. Used by the plugin's slash commands at runtime. |
 | Forge MCP endpoint URL | e.g. `https://forge-mcp.bigbrainforge.com` (already wired into the plugin's default config) |
-| Your repo/project identifier | Used when starting a Forge session (`/forge:new` will prompt) |
+| Your repo/project identifier | Used when starting a Forge goal (`/forge:goal` will prompt) |
 
 If your organisation uses **GCP Secret Manager** (the default for pilot clients), BigBrain will work with you to pre-populate two secrets in your GCP project:
 
@@ -39,6 +40,8 @@ If your organisation uses **GCP Secret Manager** (the default for pilot clients)
 - `FORGE_ACCESS_TOKEN` — your MCP endpoint bearer token value
 
 You'll pass the GCP project ID to the installer; nothing else about either secret touches your workstation.
+
+If your organisation uses **1Password (Business or Teams)**, BigBrain will work with you to set up a shared vault (typical name: `Platform - AI - FORGE` or `<Client>-AI-FORGE`) containing two items, `FORGE_ACCESS_TOKEN` and `FORGE_PACKAGE_TOKEN` (each with the secret in the `credential` field). You're granted access to the vault with **View Only + View and Copy Passwords** permissions — no token values are ever transmitted out-of-band. Vault membership IS the secure delivery channel. 1Password Personal/Family plans do not support shared vaults; Teams or Business is required for this backend.
 
 ---
 
@@ -80,33 +83,46 @@ After the installer completes, you MUST either **open a new terminal** or **re-s
 Every prompt has a corresponding flag if you want a no-questions-asked run (useful in provisioning scripts):
 
 ```bash
-# macOS/Linux
+# macOS/Linux, GCP
 ./install.sh --secrets=gcp --gcp-project=YOUR-PROJECT --non-interactive
 ```
 
 ```powershell
-# Windows
+# Windows, GCP
 .\install.ps1 -Secrets gcp -GcpProject YOUR-PROJECT -NonInteractive
+```
+
+```bash
+# macOS/Linux, 1Password
+./install.sh --secrets=onepassword --op-vault='Platform - AI - FORGE'
+```
+
+```powershell
+# Windows, 1Password
+.\install.ps1 -Secrets onepassword -OpVault 'Platform - AI - FORGE'
 ```
 
 See `./install.sh --help` / `Get-Help .\install.ps1 -Full` for the full flag list.
 
 ---
 
-## 3. Secrets backends: OS keystore vs GCP Secret Manager
+## 3. Secrets backends: OS keystore vs GCP Secret Manager vs 1Password
 
-The installer offers two backends for storing `FORGE_PACKAGE_TOKEN` and `FORGE_ACCESS_TOKEN`. Both keep the secret out of any file on disk — the difference is *where* the encrypted value lives.
+The installer offers three backends for storing `FORGE_PACKAGE_TOKEN` and `FORGE_ACCESS_TOKEN`. All three keep the secret out of any file on disk — the difference is *where* the encrypted value lives.
 
-| | **OS keystore** (default) | **GCP Secret Manager** |
-|---|---|---|
-| Where stored | macOS Keychain / Linux libsecret / Windows Credential Manager | Your GCP project, encrypted at rest by Google |
-| Access control | Per-user on the workstation | GCP IAM; rotatable centrally |
-| Audit | OS-level only | Cloud Audit Logs |
-| Prerequisites | None (built into macOS/Windows; Linux needs `libsecret-tools`) | `gcloud` CLI installed + `gcloud auth login` completed; secrets pre-created |
-| Rotation | Re-run installer | Update secret version in GCP; shell re-fetches on next startup |
-| Offline resilience | Works offline | Shell startup needs network reachability to GCP (degrades to empty env var; plugin will print a clear auth error) |
+| | **OS keystore** (default) | **GCP Secret Manager** | **1Password** |
+|---|---|---|---|
+| Where stored | macOS Keychain / Linux libsecret / Windows Credential Manager | Your GCP project, encrypted at rest by Google | Shared 1Password vault, encrypted at rest by 1Password |
+| Access control | Per-user on the workstation | GCP IAM; rotatable centrally | 1Password vault ACL (View Only / View & Share / Manage / etc.) |
+| Audit | OS-level only | Cloud Audit Logs | 1Password Business audit logs (per-user `op read` events) |
+| Prerequisites | None (built into macOS/Windows; Linux needs `libsecret-tools`) | `gcloud` CLI installed + `gcloud auth login` completed; secrets pre-created | `op` CLI installed, signed in (desktop integration), vault access granted |
+| Rotation | Re-run installer | Update secret version in GCP; shell re-fetches on next startup | Edit item value in 1Password; shell re-fetches on next startup |
+| Offline resilience | Works offline | Shell startup needs network reachability to GCP (degrades to empty env var; plugin will print a clear auth error) | Works when 1Password desktop app is unlocked; cold-boot first-shell-after-unlock has slight delay |
+| Best for | Single developer workstation, zero cloud dependencies | Centralized secret management with cloud-audited access | Multi-engineer client teams; centralized rotation without GCP overhead |
 
 **Pick GCP Secret Manager if:** your org has centralized secret management, compliance requires cloud-audited secret access, or multiple engineers share secret rotation duties.
+
+**Pick 1Password if:** your org already uses 1Password Business/Teams, you want to onboard engineers by adding them to a shared vault, and centralized rotation is needed without standing up GCP infrastructure.
 
 **Pick OS keystore if:** you're a single developer workstation and want zero cloud dependencies.
 
@@ -158,6 +174,57 @@ Rotate a secret by creating a new version; shells automatically pick up the late
 printf '<new-token>' | gcloud secrets versions add FORGE_ACCESS_TOKEN --data-file=- --project=YOUR-PROJECT
 ```
 
+### How the installer uses 1Password
+
+Rather than copying the secret values onto your workstation, the installer writes two lines to your shell profile that fetch from 1Password at every shell startup via the `op read` CLI:
+
+```bash
+# macOS/Linux, appended to ~/.zshrc or ~/.bashrc
+export FORGE_PACKAGE_TOKEN="$(op read 'op://Platform - AI - FORGE/FORGE_PACKAGE_TOKEN/credential' 2>/dev/null)"
+export FORGE_ACCESS_TOKEN="$(op read 'op://Platform - AI - FORGE/FORGE_ACCESS_TOKEN/credential' 2>/dev/null)"
+```
+
+```powershell
+# Windows, appended to $PROFILE
+$env:FORGE_PACKAGE_TOKEN = (& op read 'op://Platform - AI - FORGE/FORGE_PACKAGE_TOKEN/credential' 2>$null)
+$env:FORGE_ACCESS_TOKEN  = (& op read 'op://Platform - AI - FORGE/FORGE_ACCESS_TOKEN/credential' 2>$null)
+```
+
+The vault name, item names, and field name are all configurable via `--op-vault` / `--op-access-item` / `--op-package-item` / `--op-field` (or the `-OpVault` / `-OpAccessItem` / `-OpPackageItem` / `-OpField` PowerShell equivalents). Defaults are `Platform - AI - FORGE`, `FORGE_ACCESS_TOKEN`, `FORGE_PACKAGE_TOKEN`, and `credential` respectively.
+
+The installer auto-detects 1Password readiness when (a) `op` is on PATH, (b) `op whoami` succeeds, and (c) both vault items resolve to non-empty values. If you pass `--secrets=onepassword` but `op` is missing, the installer offers to install it via `winget install AgileBits.1Password.CLI` (Windows) or `brew install --cask 1password-cli` (macOS); on Linux it exits with the manual-install URL <https://developer.1password.com/docs/cli/get-started/>. When the 1Password backend activates, the installer also sweeps stale `FORGE_*` entries from the OS keystore (Credential Manager / Keychain / libsecret) so two backends never race.
+
+Prereqs:
+
+- 1Password **Business** or **Teams** account. Personal/Family plans only have Private vaults, which cannot be shared — they work for a single user but defeat the shared-vault onboarding model.
+- 1Password CLI (`op`) installed and on PATH.
+- 1Password desktop app installed with **Settings → Developer → Integrate with 1Password CLI** enabled. Without the desktop integration `op` falls back to a session-key prompt on every call, which breaks unattended shell startup.
+- Vault access granted by the operator to your 1Password account.
+
+### Pre-creating the 1Password items
+
+A BigBrain operator typically does this for you. If you're doing it yourself, with both token values in hand:
+
+```bash
+# Create the shared vault (admin only)
+op vault create 'Platform - AI - FORGE'
+
+# Add the two items (FORGE_PACKAGE_TOKEN value piped from a secure source)
+op item create --category=password --vault='Platform - AI - FORGE' \
+  --title=FORGE_PACKAGE_TOKEN credential='ghp_xxxxxxxxxxxxxx'
+
+op item create --category=password --vault='Platform - AI - FORGE' \
+  --title=FORGE_ACCESS_TOKEN credential='your-mcp-token-here'
+```
+
+Then share the vault with each engineer using least-privilege permissions — **View Only + View and Copy Passwords**. In the 1Password admin UI, also disable **Copy and Share Items** and **Export Items** for non-admin members so the secret can be read into shell env vars but not exfiltrated via the UI.
+
+Rotate a token by editing the item value in 1Password (web UI, desktop app, or `op item edit`); shells automatically pick up the latest on next startup:
+
+```bash
+op item edit FORGE_ACCESS_TOKEN credential='<new-token>' --vault='Platform - AI - FORGE'
+```
+
 ---
 
 ## 4. After install — verify the plugin
@@ -207,7 +274,14 @@ After the installer exits:
    ```
 
 4. **In Claude Code**, type `/forge:help` — you should see the command list.
-5. **Start your first session** with `/forge:new`.
+5. **Start your first goal** with `/forge:goal "<your-objective>"`.
+
+   The canonical Forge flow is **`/forge:goal → /forge:review → /forge:done`**:
+   - `/forge:goal` — set a verifiable objective; Claude iterates until success criteria are met.
+   - `/forge:review` — required code-review gate before shipping.
+   - `/forge:done` — deliver: capture follow-ups to backlog, update roadmap, archive the session.
+
+   Optional side-channel commands: `/forge:save` (mid-flight checkpoint), `/forge:resume` (pick up where you left off), `/forge:plan` (planning sketch). Use these as needed — they are not required steps in the canonical flow.
 
 If slash commands fail with a clear auth error, the shell Claude Code inherited didn't have `FORGE_ACCESS_TOKEN` set. Re-run step 1 above, close and relaunch Claude Code from the refreshed shell.
 
@@ -264,6 +338,20 @@ $env:FORGE_PACKAGE_TOKEN = (Get-StoredCredential -Target 'FORGE_PACKAGE_TOKEN').
 export FORGE_PACKAGE_TOKEN="$(gcloud secrets versions access latest --secret=FORGE_PACKAGE_TOKEN --project=YOUR-PROJECT 2>/dev/null)"
 ```
 
+**1Password CLI (`op`):** if your secret lives in a shared 1Password vault, install the `op` CLI (Windows: `winget install --id AgileBits.1Password.CLI -e`; macOS: `brew install --cask 1password-cli`; Linux: <https://developer.1password.com/docs/cli/get-started/>), then enable **Settings → Developer → Integrate with 1Password CLI** in the desktop app, sign in with `op signin`, and append one of:
+
+```bash
+# macOS / Linux — append to ~/.zshrc or ~/.bashrc
+export FORGE_PACKAGE_TOKEN="$(op read 'op://Platform - AI - FORGE/FORGE_PACKAGE_TOKEN/credential' 2>/dev/null)"
+```
+
+```powershell
+# Windows — append to $PROFILE
+$env:FORGE_PACKAGE_TOKEN = (& op read 'op://Platform - AI - FORGE/FORGE_PACKAGE_TOKEN/credential' 2>$null)
+```
+
+Replace `Platform - AI - FORGE` with your vault name. The auto-installer's `--secrets=onepassword` / `-Secrets onepassword` flag writes these lines for you and also sweeps stale OS-keystore copies — manual setup is only needed if the installer fails.
+
 ### 5.3 Configure `~/.npmrc`
 
 Append these three lines to `~/.npmrc` (path is `%USERPROFILE%\.npmrc` on Windows):
@@ -296,6 +384,18 @@ Or GCP:
 
 ```bash
 export FORGE_ACCESS_TOKEN="$(gcloud secrets versions access latest --secret=FORGE_ACCESS_TOKEN --project=YOUR-PROJECT 2>/dev/null)"
+```
+
+Or 1Password (matches the §5.2 bold-paragraph block — same `op` CLI prereqs):
+
+```bash
+# macOS / Linux — append to ~/.zshrc or ~/.bashrc
+export FORGE_ACCESS_TOKEN="$(op read 'op://Platform - AI - FORGE/FORGE_ACCESS_TOKEN/credential' 2>/dev/null || true)"
+```
+
+```powershell
+# Windows — append to $PROFILE
+$env:FORGE_ACCESS_TOKEN = (& op read 'op://Platform - AI - FORGE/FORGE_ACCESS_TOKEN/credential' 2>$null)
 ```
 
 ### 5.6 Run the plugin installer
@@ -462,6 +562,14 @@ secret-tool store --label='Forge access token' service FORGE_ACCESS_TOKEN
 # "Add a generic credential" if no entry exists yet.
 ```
 
+#### Update your 1Password vault item
+
+If you're on the 1Password backend, the workstation rotation step is a single edit in 1Password — no installer re-run needed. Open the `FORGE_ACCESS_TOKEN` item in the 1Password desktop app or web UI and paste the new value into the `credential` field. The next shell you open picks it up automatically via the `op read` profile line. From the CLI:
+
+```bash
+op item edit FORGE_ACCESS_TOKEN credential='<new-token>' --vault='Platform - AI - FORGE'
+```
+
 Then update the env var in your current shell so the new value takes effect immediately (new shells pick up from the keystore automatically):
 
 ```bash
@@ -512,14 +620,52 @@ This is a real network probe (not a local lookup) — it POSTs to `/api/atlas/in
 |---|---|
 | Run installer (macOS/Linux, keystore) | `./install.sh` |
 | Run installer (macOS/Linux, GCP) | `./install.sh --secrets=gcp --gcp-project=P` |
+| Run installer (macOS/Linux, 1Password) | `./install.sh --secrets=onepassword --op-vault='Platform - AI - FORGE'` |
 | Run installer (Windows, keystore) | `.\install.ps1` |
 | Run installer (Windows, GCP) | `.\install.ps1 -Secrets gcp -GcpProject P` |
+| Run installer (Windows, 1Password) | `.\install.ps1 -Secrets onepassword -OpVault 'Platform - AI - FORGE'` |
 | Re-run plugin file copy | `forge-plugin` |
 | Update | `npm install -g @bigbrainforge/forge-plugin@latest && forge-plugin` |
 | Recover from bin-shim collision (pre-0.6.0 upgrades) | `forge-plugin --cleanup` then reinstall |
 | Uninstall | `forge-plugin --uninstall` |
 | Verify install | `ls ~/.claude/commands/forge/` + `cat ~/.claude/forge/VERSION` |
-| In Claude Code | `/forge:help`, `/forge:new`, `/forge:status`, `/forge:resume`, `/forge:done` |
+| In Claude Code | `/forge:help`, `/forge:goal`, `/forge:review`, `/forge:done`, `/forge:status`, `/forge:save`, `/forge:resume` |
+
+---
+
+## 9. Onboarding teammates via a shared 1Password vault
+
+The 1Password backend reduces engineer onboarding to "add to vault → run installer." No token values transit email, Slack, or any other channel — **vault membership is the only secret transmitted**.
+
+### Operator side (one-time setup, then per-teammate add)
+
+1. Create the shared vault in 1Password Business or Teams (suggested name: `Platform - AI - FORGE` or `<Client>-AI-FORGE`).
+2. Add two items in the vault: `FORGE_ACCESS_TOKEN` and `FORGE_PACKAGE_TOKEN`, each with the token value in the `credential` field.
+3. Grant each teammate access to the vault with **View Only + View and Copy Passwords** permissions. This is least-privilege for token consumers — they can read the value into `op read`, but cannot edit, share, or export it.
+4. In the vault's permission settings, explicitly disable **Copy and Share Items** and **Export Items** for the non-admin member role.
+5. Rotation stays admin-only: when a token rotates (per the [provenance doc](../../../docs/as-built/forge-access-token-provenance.md)), edit the item value in 1Password. Every teammate's next-opened shell picks up the new value automatically.
+
+### Teammate side (per-workstation)
+
+1. Install the 1Password desktop app and sign in to the account that was granted vault access.
+2. **Settings → Developer → Integrate with 1Password CLI** — enable. (Without this, `op` prompts for a session key on every CLI call and breaks unattended shell startup.)
+3. Install the 1Password CLI: `winget install --id AgileBits.1Password.CLI -e` (Windows), `brew install --cask 1password-cli` (macOS), or follow <https://developer.1password.com/docs/cli/get-started/> (Linux). The auto-installer can do this step for you if `op` is missing.
+4. Run the installer with the 1Password backend:
+
+   ```bash
+   ./install.sh --secrets=onepassword
+   ```
+
+   ```powershell
+   .\install.ps1 -Secrets onepassword
+   ```
+
+   That's the entire flow. The installer verifies `op whoami` succeeds, confirms both vault items resolve to non-empty values, writes the `op read` profile lines, sweeps any stale OS-keystore entries, and exits.
+5. Open a new shell so the profile lines load, then [verify the plugin](#4-after-install--verify-the-plugin).
+
+### Permissions note
+
+**View Only + View and Copy Passwords** is the right answer for token consumers. **Manage Vault** / **Manage Items** belong only to the operators responsible for rotation. Mixing the two on the same role removes the least-privilege boundary that makes this backend defensible for compliance review.
 
 ---
 

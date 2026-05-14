@@ -6,7 +6,7 @@
     One-command client install for the Forge Claude Code plugin. Handles:
       - nvm-windows detection (installs via winget if available)
       - Node 22 LTS install + use
-      - FORGE_PACKAGE_TOKEN storage (Windows Credential Manager or GCP Secret Manager)
+      - FORGE_PACKAGE_TOKEN storage (Windows Credential Manager, GCP Secret Manager, or 1Password)
       - .npmrc registry + auth config
       - npm install -g @bigbrainforge/forge-plugin
       - FORGE_ACCESS_TOKEN storage (same secrets backend)
@@ -23,6 +23,7 @@
 .PARAMETER Secrets
     Where to store secrets. "keystore" = Windows Credential Manager (default).
     "gcp" = GCP Secret Manager via gcloud.
+    "onepassword" = 1Password CLI (op) reading from a shared vault at shell start.
 
 .PARAMETER GcpProject
     GCP project ID for Secret Manager (required when Secrets=gcp).
@@ -32,6 +33,23 @@
 
 .PARAMETER GcpAccessSecret
     Secret name holding FORGE_ACCESS_TOKEN. Default: FORGE_ACCESS_TOKEN.
+
+.PARAMETER OpVault
+    1Password vault name (when Secrets=onepassword). Default: 'Platform - AI - FORGE'.
+    Must be a vault your 1Password account has access to. Private vaults are
+    not shareable in 1Password — use a Teams/Business shared vault for teams.
+
+.PARAMETER OpAccessItem
+    1Password item title holding the FORGE_ACCESS_TOKEN value. Default:
+    FORGE_ACCESS_TOKEN.
+
+.PARAMETER OpPackageItem
+    1Password item title holding the FORGE_PACKAGE_TOKEN value. Default:
+    FORGE_PACKAGE_TOKEN.
+
+.PARAMETER OpField
+    1Password field name within each item that holds the secret. Default:
+    credential.
 
 .PARAMETER SkipVerify
     Skip the final plugin-file verification step.
@@ -44,16 +62,30 @@
     .\install.ps1 -Secrets gcp -GcpProject my-proj
     # uses GCP Secret Manager with default secret names
 
+.EXAMPLE
+    .\install.ps1 -Secrets onepassword -OpVault 'Platform - AI - FORGE'
+    # uses 1Password CLI (op) to read FORGE_ACCESS_TOKEN + FORGE_PACKAGE_TOKEN
+    # from a shared vault at every shell startup. No tokens written to
+    # Windows Credential Manager. Auto-installs op via winget if missing.
+
 .NOTES
     Pre-populate secrets in GCP before running with -Secrets gcp:
       "ghp_..."  | gcloud secrets create FORGE_PACKAGE_TOKEN  --data-file=- --project=PROJECT
       "mcp..."   | gcloud secrets create FORGE_ACCESS_TOKEN --data-file=- --project=PROJECT
+
+    Pre-populate items in 1Password before running with -Secrets onepassword:
+      In the shared vault, create two items titled FORGE_ACCESS_TOKEN and
+      FORGE_PACKAGE_TOKEN, each with the secret value in the 'credential'
+      field. Grant teammates View Only + View and Copy Passwords (least
+      privilege for token consumers). The 1Password desktop app must be
+      installed and signed in, and CLI integration enabled at:
+        Settings -> Developer -> "Integrate with 1Password CLI"
 #>
 
 [CmdletBinding()]
 param(
     # If not supplied, the installer prompts for this interactively.
-    [ValidateSet('', 'keystore', 'gcp')]
+    [ValidateSet('', 'keystore', 'gcp', 'onepassword')]
     [string]$Secrets = '',
 
     # If not supplied under -Secrets gcp, the installer prompts for this.
@@ -62,6 +94,31 @@ param(
     [string]$GcpPackageSecret = 'FORGE_PACKAGE_TOKEN',
 
     [string]$GcpAccessSecret = 'FORGE_ACCESS_TOKEN',
+
+    # 1Password backend defaults — used when -Secrets onepassword. Vault is
+    # the shared vault containing both token items; default matches the
+    # BigBrain operator pattern. Item titles default to the env-var names
+    # so a fresh setup needs zero customization. Field defaults to
+    # 'credential' which is what 1Password's API Credential template uses.
+    #
+    # ValidatePattern at parse time prevents shell-metachar injection into
+    # the persistent $PROFILE line written by Install-TokenInOnePassword.
+    # Real-world 1Password vault / item / field names are alphanumeric +
+    # space + . _ -. Anything else (quote, dollar, backtick, semicolon,
+    # pipe, ampersand, parenthesis, newline) gets rejected loudly BEFORE
+    # Add-ProfileLine writes a line that re-executes on every shell start.
+    # The default 'Platform - AI - FORGE' is safe by construction.
+    [ValidatePattern('^[A-Za-z0-9 _.\-]+$')]
+    [string]$OpVault = 'Platform - AI - FORGE',
+
+    [ValidatePattern('^[A-Za-z0-9 _.\-]+$')]
+    [string]$OpAccessItem = 'FORGE_ACCESS_TOKEN',
+
+    [ValidatePattern('^[A-Za-z0-9 _.\-]+$')]
+    [string]$OpPackageItem = 'FORGE_PACKAGE_TOKEN',
+
+    [ValidatePattern('^[A-Za-z0-9 _.\-]+$')]
+    [string]$OpField = 'credential',
 
     [switch]$NonInteractive,
 
@@ -291,6 +348,105 @@ function Install-TokenInGcp([string]$VarName, [string]$GcpSecret) {
     Set-Item -Path "Env:$VarName" -Value (& gcloud secrets versions access latest --secret=$GcpSecret --project=$GcpProject)
 }
 
+# ── 1Password helpers ───────────────────────────────────────────────────────
+# Symmetric to the gcp helpers above. The token never enters this script's
+# memory beyond the Set-Item call below — it lives in 1Password and is
+# fetched via `op read` at every shell startup (the $PROFILE line).
+
+function Test-OpInstalled {
+    [bool](Get-Command op -ErrorAction SilentlyContinue)
+}
+
+function Test-OpAuthenticated {
+    if (-not (Test-OpInstalled)) { return $false }
+    try {
+        $null = & op whoami 2>$null
+        return ($LASTEXITCODE -eq 0)
+    } catch { return $false }
+}
+
+function Test-OpVaultItem {
+    param([string]$Vault, [string]$Item, [string]$Field)
+    try {
+        $val = & op read "op://$Vault/$Item/$Field" 2>$null
+        if ($LASTEXITCODE -ne 0) { return $false }
+        return -not [string]::IsNullOrEmpty($val)
+    } catch { return $false }
+}
+
+# All-or-nothing — both items must resolve before we auto-select the
+# onepassword backend. Prevents the case where a teammate has been
+# granted the vault but only one of the two items was shared, which
+# would otherwise strand them with one empty env var.
+function Test-OpVaultAccess {
+    param([string]$Vault, [string]$AccessItem, [string]$PackageItem, [string]$Field)
+    if (-not (Test-OpAuthenticated)) { return $false }
+    if (-not (Test-OpVaultItem -Vault $Vault -Item $AccessItem -Field $Field)) { return $false }
+    if (-not (Test-OpVaultItem -Vault $Vault -Item $PackageItem -Field $Field)) { return $false }
+    return $true
+}
+
+function Install-OpCli {
+    if (Test-Command 'winget') {
+        Write-InfoMsg 'installing 1Password CLI via winget...'
+        winget install --id AgileBits.1Password.CLI -e --accept-package-agreements --accept-source-agreements | Out-Null
+        # winget updates PATH but current session must refresh — same
+        # pattern Step 1 uses after the nvm-windows install.
+        $env:Path = [System.Environment]::GetEnvironmentVariable('Path', 'Machine') + ';' + [System.Environment]::GetEnvironmentVariable('Path', 'User')
+        if (-not (Test-OpInstalled)) {
+            Die '1Password CLI installed but op not on PATH. Close this PowerShell, open a fresh window, and re-run.'
+        }
+        Write-Ok '1Password CLI installed'
+    } else {
+        Die '1Password CLI (op) not installed and winget unavailable. Install op manually from https://developer.1password.com/docs/cli/get-started/, then re-run.'
+    }
+}
+
+function Install-TokenInOnePassword([string]$VarName, [string]$ItemName) {
+    $ref = "op://$OpVault/$ItemName/$OpField"
+    $line = "`$env:$VarName = (& op read `"$ref`" 2>`$null)"
+    Add-ProfileLine $line
+    Set-Item -Path "Env:$VarName" -Value (& op read $ref 2>$null)
+}
+
+# Sweep stale Credential Manager entries when activating the onepassword
+# backend so the keystore is never a second source of truth. Idempotent —
+# missing entries silently no-op. Sweeps current names plus every retired
+# token name per docs/as-built/forge-access-token-provenance.md:
+#   FORGE_CODEX_TOKEN     — retired PR #230 (Forge Atlas rename)
+#   ATLAS_INGEST_TOKEN    — retired PR #552 (Forge-prefix consistency)
+#   CODEX_INGEST_TOKEN    — retired PR #544 (mechanical rename)
+#   FORGE_INGEST_TOKEN    — current ingest token; sweep so a stale workstation
+#                           value can't shadow the 1Password-sourced one.
+# After each cmdkey /delete, re-read via CredmanV2 to verify the entry is
+# actually gone — cmdkey can silently fail on some Persist=2 entries
+# written via CredWrite directly (though never observed in the field).
+function Clear-StaleKeystoreEntries {
+    $sweepNames = @(
+        $PatVar,
+        $TokVar,
+        'FORGE_CODEX_TOKEN',
+        'forge:FORGE_CODEX_TOKEN',
+        'ATLAS_INGEST_TOKEN',
+        'CODEX_INGEST_TOKEN',
+        'FORGE_INGEST_TOKEN'
+    )
+    foreach ($name in $sweepNames) {
+        try {
+            $existing = [CredmanV2]::Read($name)
+            if ($existing) {
+                & cmdkey /delete:$name *>$null
+                $stillThere = [CredmanV2]::Read($name)
+                if ($stillThere) {
+                    Write-WarnMsg "cmdkey /delete:$name reported success but entry persists — inspect Credential Manager manually"
+                } else {
+                    Write-InfoMsg "swept stale Credential Manager entry: $name"
+                }
+            }
+        } catch { }
+    }
+}
+
 # ── Step 1: Node $NodeVersion via nvm-windows ────────────────────────────────
 #
 # Fast path: if exactly Node $NodeVersion is on PATH, skip nvm entirely.
@@ -391,11 +547,23 @@ if (-not $Secrets -and -not $ForceTokens) {
         Write-Host '  token prompts. Running in HEAL mode (reusing stored tokens,' -ForegroundColor Cyan
         Write-Host '  sweeping stale state, reinstalling). Use -ForceTokens to' -ForegroundColor Cyan
         Write-Host '  rotate.' -ForegroundColor Cyan
+    } elseif (Test-OpVaultAccess -Vault $OpVault -AccessItem $OpAccessItem -PackageItem $OpPackageItem -Field $OpField) {
+        # Auto-detect onepassword AFTER keystore HEAL so existing keystore
+        # users are never silently migrated. Detection requires (a) op
+        # installed + signed in AND (b) both items resolve in the configured
+        # vault — all-or-nothing avoids false positives that would strand
+        # the user with empty env vars.
+        $Secrets = 'onepassword'
+        Write-Host ''
+        Write-Host "  Detected 1Password CLI signed in and both FORGE_*_TOKEN items" -ForegroundColor Cyan
+        Write-Host "  resolved in vault '$OpVault' — auto-selecting onepassword" -ForegroundColor Cyan
+        Write-Host '  backend. Pass -Secrets keystore (or -ForceTokens to' -ForegroundColor Cyan
+        Write-Host '  re-prompt) to override.' -ForegroundColor Cyan
     } else {
         $Secrets = Read-PromptChoice `
             'Where should the FORGE_PACKAGE_TOKEN and FORGE_ACCESS_TOKEN be stored?' `
             'keystore' `
-            @('keystore', 'gcp')
+            @('keystore', 'gcp', 'onepassword')
     }
 }
 
@@ -428,6 +596,47 @@ if ($Secrets -eq 'gcp') {
         Write-Ok "secret '$secret' exists in $GcpProject"
     }
 }
+elseif ($Secrets -eq 'onepassword') {
+    # Setup chain: (1) install op via winget if missing; (2) verify desktop
+    # CLI integration is enabled (op whoami succeeds); (3) info-banner the
+    # vault/item/field configuration; (4) probe both items via op read
+    # before any profile-line is written; (5) sweep stale Credential
+    # Manager entries so the keystore is not a second source of truth.
+
+    if (-not (Test-OpInstalled)) {
+        Write-InfoMsg '1Password CLI (op) not found'
+        if ($NonInteractive) {
+            Die '1Password CLI not installed and -NonInteractive set. Install: winget install --id AgileBits.1Password.CLI -e'
+        }
+        $install = Read-PromptChoice 'Install 1Password CLI now (via winget)?' 'yes' @('yes', 'no')
+        if ($install -eq 'yes') {
+            Install-OpCli
+        } else {
+            Die '1Password CLI required for -Secrets onepassword. Aborting.'
+        }
+    }
+
+    if (-not (Test-OpAuthenticated)) {
+        Die '1Password CLI installed but not signed in. Enable desktop integration: open the 1Password app -> Settings -> Developer -> tick "Integrate with 1Password CLI", then re-run this installer.'
+    }
+
+    Write-InfoMsg "1Password vault:  $OpVault"
+    Write-InfoMsg "Access item:      $OpAccessItem"
+    Write-InfoMsg "Package item:     $OpPackageItem"
+    Write-InfoMsg "Field:            $OpField"
+
+    foreach ($pair in @(
+        @{ Item = $OpAccessItem;  Label = 'access token' },
+        @{ Item = $OpPackageItem; Label = 'package token' }
+    )) {
+        if (-not (Test-OpVaultItem -Vault $OpVault -Item $pair.Item -Field $OpField)) {
+            Die "op read 'op://$OpVault/$($pair.Item)/$OpField' returned empty. Check: vault name '$OpVault', item title '$($pair.Item)', field name '$OpField', and that the vault is shared with your 1Password account."
+        }
+        Write-Ok "item '$($pair.Item)' resolves in vault '$OpVault'"
+    }
+
+    Clear-StaleKeystoreEntries
+}
 
 # ── Step 3: FORGE_PACKAGE_TOKEN → env var ────────────────────────────────────
 
@@ -435,6 +644,9 @@ Write-Step "Step 3 — $PatVar → env var"
 
 if ($Secrets -eq 'gcp') {
     Install-TokenInGcp $PatVar $GcpPackageSecret
+}
+elseif ($Secrets -eq 'onepassword') {
+    Install-TokenInOnePassword $PatVar $OpPackageItem
 }
 else {
     # Migration (forge-v0.5.28): earlier installer versions (<=0.5.27) emitted
@@ -597,7 +809,7 @@ public static class CredmanV2 {
 }
 
 $currentPat = (Get-Item "Env:$PatVar" -ErrorAction SilentlyContinue).Value
-if (-not $currentPat) { Die "$PatVar empty after setup — check keystore/GCP configuration" }
+if (-not $currentPat) { Die "$PatVar empty after setup — check keystore/GCP/1Password configuration" }
 Write-Ok "$PatVar populated (length=$($currentPat.Length))"
 
 # ── Step 4: ~/.npmrc ─────────────────────────────────────────────────────────
@@ -660,9 +872,37 @@ foreach ($dir in ($shimDirs | Select-Object -Unique)) {
     }
 }
 
+# Intentionally no version pin: `npm install -g @bigbrainforge/forge-plugin`
+# resolves to the `@latest` dist-tag, which the release pipeline sets on
+# every publish. The post-install verify below asserts we got @latest;
+# fails loud if the registry returned an older version (corp mirror lag,
+# npm cache poisoning, etc.).
 & npm install -g $PackageName --no-audit --no-fund
 if ($LASTEXITCODE -ne 0) { Die 'npm install failed — see output above' }
-Write-Ok "installed $PackageName"
+Write-Ok "ran npm install -g $PackageName"
+
+$installedJson = & npm ls -g $PackageName --depth=0 --json 2>$null
+$installed = $null
+try {
+    $parsed = $installedJson | ConvertFrom-Json
+    if ($parsed.dependencies -and $parsed.dependencies.$PackageName) {
+        $installed = $parsed.dependencies.$PackageName.version
+    }
+} catch { }
+
+$latest = (& npm view $PackageName version 2>$null)
+
+if ($installed -and $latest) {
+    if ($installed -eq $latest) {
+        Write-Ok "installed $PackageName@$installed (matches registry @latest)"
+    } else {
+        Die "version mismatch: installed $installed but registry @latest is $latest. Possible causes: stale npm cache (npm cache clean --force), corporate registry mirror lag, or an incomplete release publish. Re-run after resolving."
+    }
+} elseif ($installed) {
+    Write-WarnMsg "installed $PackageName@$installed but could not query registry @latest to verify (network / auth)"
+} else {
+    Write-WarnMsg "$PackageName installed but version could not be determined"
+}
 
 # ── Step 6: FORGE_ACCESS_TOKEN → env var ──────────────────────────────────────
 
@@ -671,12 +911,23 @@ Write-Step "Step 6 — $TokVar → env var"
 if ($Secrets -eq 'gcp') {
     Install-TokenInGcp $TokVar $GcpAccessSecret
 }
+elseif ($Secrets -eq 'onepassword') {
+    Install-TokenInOnePassword $TokVar $OpAccessItem
+}
 else {
     Install-TokenInCredman $TokVar 'FORGE_ACCESS_TOKEN (Forge MCP endpoint)'
 }
 
 $currentTok = (Get-Item "Env:$TokVar" -ErrorAction SilentlyContinue).Value
 if (-not $currentTok) {
+    if ($Secrets -eq 'onepassword') {
+        # Step 2 already verified the item resolved via op read. A
+        # subsequent empty value here means op broke between Step 2
+        # and Step 6 (desktop app re-locked, vault permission revoked,
+        # field renamed mid-install). Die loudly — silent warn would
+        # let the installer exit 0 with a non-functional access token.
+        Die "$TokVar empty after 1Password read — op returned empty despite Step 2 vault probe succeeding. Check: 1Password desktop app is unlocked, vault access not revoked, item '$OpAccessItem' field '$OpField' not modified mid-install."
+    }
     Write-WarnMsg "$TokVar not populated in this session (will be in new shells after `$PROFILE reload)"
 }
 
@@ -776,10 +1027,14 @@ if ($SkipVerify) {
 } else {
     Write-Step 'Step 8 — verify'
     $claudeHome = Join-Path $env:USERPROFILE '.claude'
-    $newCmd = Join-Path $claudeHome 'commands\forge\new.md'
+    # Verify the canonical entry-point command landed. /forge:goal is the
+    # entry point as of v2.2 (PR #574 deprecated and archived /forge:new);
+    # this check is the durable invariant — every supported plugin version
+    # ships goal.md.
+    $goalCmd = Join-Path $claudeHome 'commands\forge\goal.md'
     $versionFile = Join-Path $claudeHome 'forge\VERSION'
-    if (-not (Test-Path $newCmd)) {
-        Die "$newCmd missing — plugin install did not complete"
+    if (-not (Test-Path $goalCmd)) {
+        Die "$goalCmd missing — plugin install did not complete"
     }
     Write-Ok "slash commands installed at $(Join-Path $claudeHome 'commands\forge')"
     if (-not (Test-Path $versionFile)) {
@@ -811,7 +1066,7 @@ Write-Host '  Next:'
 Write-Host "    1. Open a new PowerShell (or dot-source `"$PROFILE`") — see above."
 Write-Host '    2. Launch Claude Code from that shell so it inherits the env vars.'
 Write-Host '    3. In Claude Code, run:  /forge:help'
-Write-Host '    4. Start your first session:  /forge:new'
+Write-Host '    4. Start your first goal:    /forge:goal "<your-objective>"'
 Write-Host ''
 Write-Host '  The plugin runs against your Forge MCP endpoint. No local CLI needed —'
 Write-Host '  atlas indexing is handled centrally by the Forge team.'

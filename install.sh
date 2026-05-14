@@ -3,7 +3,7 @@
 #
 # One-command client install for the Claude Code plugin. Handles:
 #   - nvm install (if missing) + Node 22 LTS
-#   - FORGE_PACKAGE_TOKEN storage (OS Keychain or GCP Secret Manager)
+#   - FORGE_PACKAGE_TOKEN storage (OS Keychain, GCP Secret Manager, or 1Password)
 #   - ~/.npmrc registry + auth config
 #   - npm install -g @bigbrainforge/forge-plugin
 #   - FORGE_ACCESS_TOKEN storage (same secrets backend)
@@ -21,6 +21,10 @@
 #   ./install.sh --secrets=gcp --gcp-project=my-proj \
 #                --gcp-package-secret=FORGE_PACKAGE_TOKEN \
 #                --gcp-access-secret=FORGE_ACCESS_TOKEN
+#   ./install.sh --secrets=onepassword
+#   ./install.sh --secrets=onepassword --op-vault="Platform - AI - FORGE" \
+#                --op-package-item=FORGE_PACKAGE_TOKEN \
+#                --op-access-item=FORGE_ACCESS_TOKEN
 #
 # Re-run is safe — all operations are idempotent.
 
@@ -36,6 +40,10 @@ REGISTRY_URL="https://npm.pkg.github.com"
 REGISTRY_HOST="npm.pkg.github.com"
 GCP_PACKAGE_SECRET_DEFAULT="FORGE_PACKAGE_TOKEN"
 GCP_ACCESS_SECRET_DEFAULT="FORGE_ACCESS_TOKEN"
+OP_VAULT_DEFAULT="Platform - AI - FORGE"
+OP_ACCESS_ITEM_DEFAULT="FORGE_ACCESS_TOKEN"
+OP_PACKAGE_ITEM_DEFAULT="FORGE_PACKAGE_TOKEN"
+OP_FIELD_DEFAULT="credential"
 
 # ── Arg parsing ──────────────────────────────────────────────────────────────
 # Flags are supported for scripted / CI use. Missing values are prompted for
@@ -45,6 +53,10 @@ SECRETS_BACKEND=""
 GCP_PROJECT=""
 GCP_PACKAGE_SECRET="$GCP_PACKAGE_SECRET_DEFAULT"
 GCP_ACCESS_SECRET="$GCP_ACCESS_SECRET_DEFAULT"
+OP_VAULT="$OP_VAULT_DEFAULT"
+OP_ACCESS_ITEM="$OP_ACCESS_ITEM_DEFAULT"
+OP_PACKAGE_ITEM="$OP_PACKAGE_ITEM_DEFAULT"
+OP_FIELD="$OP_FIELD_DEFAULT"
 SKIP_VERIFY=false
 NON_INTERACTIVE=false
 FORCE_TOKENS=false
@@ -62,24 +74,50 @@ Without flags, the installer prompts for the choices it needs. Flags
 below are for scripted / CI runs where prompts aren't wanted.
 
 Options:
-  --secrets=keystore|gcp          Skip the "where to store secrets" prompt.
-                                  keystore = macOS Keychain / Linux libsecret
-                                  gcp      = GCP Secret Manager via gcloud
+  --secrets=keystore|gcp|onepassword
+                                  Skip the "where to store secrets" prompt.
+                                  keystore    = macOS Keychain / Linux libsecret
+                                  gcp         = GCP Secret Manager via gcloud
+                                  onepassword = 1Password vault via op CLI
   --gcp-project=PROJECT_ID        Skip the GCP project prompt (used with gcp)
   --gcp-package-secret=NAME       Override the FORGE_PACKAGE_TOKEN secret name
                                   (default: ${GCP_PACKAGE_SECRET_DEFAULT})
   --gcp-access-secret=NAME        Override the access-token secret name
                                   (default: ${GCP_ACCESS_SECRET_DEFAULT})
+  --op-vault=NAME                 1Password vault name (used with onepassword)
+                                  (default: ${OP_VAULT_DEFAULT})
+  --op-access-item=NAME           Override the FORGE_ACCESS_TOKEN item name
+                                  (default: ${OP_ACCESS_ITEM_DEFAULT})
+  --op-package-item=NAME          Override the FORGE_PACKAGE_TOKEN item name
+                                  (default: ${OP_PACKAGE_ITEM_DEFAULT})
+  --op-field=NAME                 1Password field name on each item
+                                  (default: ${OP_FIELD_DEFAULT})
   --non-interactive               Never prompt — require all needed flags
   --skip-verify                   Skip the final plugin-file verification
   --force-tokens                  Force fresh token prompts even if existing
-                                  tokens are detected in keystore / GCP (for
-                                  rotation, or when stored tokens are bad)
+                                  tokens are detected in keystore / GCP /
+                                  1Password (for rotation, or when stored
+                                  tokens are bad)
   -h, --help                      Show this help
 
 For --secrets=gcp, pre-populate the two secrets in your GCP project:
   printf 'ghp_xxx'   | gcloud secrets create ${GCP_PACKAGE_SECRET_DEFAULT}  --data-file=- --project=PROJECT_ID
   printf 'mcp-xxx'   | gcloud secrets create ${GCP_ACCESS_SECRET_DEFAULT} --data-file=- --project=PROJECT_ID
+
+For --secrets=onepassword, pre-populate the two items in your 1Password vault:
+  op item create --category=password --vault="${OP_VAULT_DEFAULT}" \\
+    --title="${OP_PACKAGE_ITEM_DEFAULT}" ${OP_FIELD_DEFAULT}='ghp_xxx'
+  op item create --category=password --vault="${OP_VAULT_DEFAULT}" \\
+    --title="${OP_ACCESS_ITEM_DEFAULT}"  ${OP_FIELD_DEFAULT}='mcp-xxx'
+
+On macOS, the installer offers to auto-install the 1Password CLI via
+Homebrew (brew install --cask 1password-cli) if op is missing. Linux
+hosts must install op manually:
+  https://developer.1password.com/docs/cli/get-started/
+
+The 1Password desktop app must be running and have CLI integration
+enabled (Settings → Developer → "Integrate with 1Password CLI") so
+op read can resolve items without a session token prompt.
 EOF
 }
 
@@ -89,6 +127,10 @@ for arg in "$@"; do
     --gcp-project=*)      GCP_PROJECT="${arg#*=}";;
     --gcp-package-secret=*)   GCP_PACKAGE_SECRET="${arg#*=}";;
     --gcp-access-secret=*) GCP_ACCESS_SECRET="${arg#*=}";;
+    --op-vault=*)         OP_VAULT="${arg#*=}";;
+    --op-access-item=*)   OP_ACCESS_ITEM="${arg#*=}";;
+    --op-package-item=*)  OP_PACKAGE_ITEM="${arg#*=}";;
+    --op-field=*)         OP_FIELD="${arg#*=}";;
     --skip-verify)        SKIP_VERIFY=true;;
     --non-interactive)    NON_INTERACTIVE=true;;
     --force-tokens)       FORCE_TOKENS=true;;
@@ -99,10 +141,47 @@ done
 
 if [ -n "$SECRETS_BACKEND" ]; then
   case "$SECRETS_BACKEND" in
-    keystore|gcp) ;;
-    *) printf 'invalid --secrets=%s (must be keystore or gcp)\n' "$SECRETS_BACKEND" >&2; exit 2;;
+    keystore|gcp|onepassword) ;;
+    *) printf 'invalid --secrets=%s (must be keystore, gcp, or onepassword)\n' "$SECRETS_BACKEND" >&2; exit 2;;
   esac
 fi
+
+# ── Validate OP_* inputs (shell-injection guard) ─────────────────────────────
+#
+# The four --op-* values are interpolated into a literal `op read "op://..."`
+# line that is appended to $PROFILE / ~/.zshrc / ~/.bashrc and re-executed at
+# every shell startup forever. Any shell metacharacter in a vault / item /
+# field name would inject persistent code into that line. Real-world
+# 1Password vault / item / field names are alphanumeric + space + . _ -.
+# Reject anything else loudly at parse time, before store_token_in_onepassword
+# is ever called.
+#
+# Matches the ps1 ValidatePattern attribute on $OpVault / $OpAccessItem /
+# $OpPackageItem / $OpField.
+
+op_name_valid() {
+  # Returns 0 if $1 matches ^[A-Za-z0-9 ._-]+$, else 1. POSIX-portable case
+  # with a negated bracket expression — works on busybox, dash, ash, bash.
+  case "$1" in
+    '') return 1;;
+    *[!A-Za-z0-9\ ._-]*) return 1;;
+    *) return 0;;
+  esac
+}
+
+for op_pair in "OP_VAULT:$OP_VAULT" "OP_ACCESS_ITEM:$OP_ACCESS_ITEM" "OP_PACKAGE_ITEM:$OP_PACKAGE_ITEM" "OP_FIELD:$OP_FIELD"; do
+  op_name="${op_pair%%:*}"
+  op_value="${op_pair#*:}"
+  if ! op_name_valid "$op_value"; then
+    printf '\n\033[1;31m✗ invalid %s value: %s\033[0m\n' "$op_name" "$op_value" >&2
+    printf '  Must match ^[A-Za-z0-9 ._-]+$ — real-world 1Password vault /\n' >&2
+    printf '  item / field names are alphanumeric + space + . _ -.\n' >&2
+    printf '  Shell metacharacters here would inject into the persistent\n' >&2
+    printf '  $PROFILE / ~/.zshrc / ~/.bashrc line on every shell startup.\n' >&2
+    exit 2
+  fi
+done
+unset op_pair op_name op_value
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -268,6 +347,94 @@ store_token_in_gcp() {
   export "${var_name}"="$(gcloud secrets versions access latest --secret="$gcp_secret" --project="$GCP_PROJECT")"
 }
 
+# ── 1Password helpers ────────────────────────────────────────────────────────
+# Mirror of the GCP path. Tokens live in a 1Password vault; profile lines
+# read them via `op read` at shell start. The 1Password desktop app must be
+# running with CLI integration enabled so `op` resolves without an extra
+# session-token prompt on each shell invocation.
+
+op_installed() { have op; }
+
+op_authenticated() {
+  op_installed && op whoami >/dev/null 2>&1
+}
+
+op_vault_item_resolves() {
+  # $1=vault $2=item $3=field
+  local val
+  val=$(op read "op://$1/$2/$3" 2>/dev/null || true)
+  [ -n "$val" ]
+}
+
+detect_existing_op_vault() {
+  # All-or-nothing — both items must resolve to avoid false positives
+  # that would strand the user with empty env vars.
+  op_authenticated || return 1
+  op_vault_item_resolves "$OP_VAULT" "$OP_ACCESS_ITEM" "$OP_FIELD" || return 1
+  op_vault_item_resolves "$OP_VAULT" "$OP_PACKAGE_ITEM" "$OP_FIELD" || return 1
+  return 0
+}
+
+install_op_cli() {
+  # macOS: brew install --cask 1password-cli
+  # Linux: die with manual install URL (no good auto-install path).
+  if [ "$(uname)" = "Darwin" ]; then
+    if have brew; then
+      info "installing 1Password CLI via Homebrew..."
+      brew install --cask 1password-cli || die "brew install 1password-cli failed"
+      ok "1Password CLI installed"
+    else
+      die "Homebrew not found. Install Homebrew first (https://brew.sh), or install op manually: https://developer.1password.com/docs/cli/get-started/"
+    fi
+  else
+    die "Automatic op install on Linux not supported. Install manually: https://developer.1password.com/docs/cli/get-started/, then re-run."
+  fi
+}
+
+store_token_in_onepassword() {
+  # Mirror store_token_in_gcp's shape exactly — single line written to
+  # $PROFILE, single export in the current session. 2>/dev/null on the RHS
+  # so a disconnected / locked 1Password app produces an empty env var
+  # rather than a non-zero shell-startup exit. The `|| true` inside $()
+  # defends against `set -e` in a sourced rc — interactive shells rarely
+  # use errexit, but Forge-managed dev shells sometimes do, and a locked
+  # 1Password app at shell-start should not kill the shell.
+  local var_name=$1 item_name=$2
+  local ref="op://${OP_VAULT}/${item_name}/${OP_FIELD}"
+  local line="export ${var_name}=\"\$(op read \"${ref}\" 2>/dev/null || true)\""
+  append_if_missing "$line" "$PROFILE"
+  export "${var_name}"="$(op read "$ref" 2>/dev/null || true)"
+}
+
+clear_stale_keystore_entries() {
+  # When onepassword backend is selected, sweep stale keystore entries to
+  # enforce a single source of truth. Sweeps current names plus every
+  # retired token name per docs/as-built/forge-access-token-provenance.md:
+  #   FORGE_CODEX_TOKEN     — retired PR #230 (Forge Atlas rename)
+  #   ATLAS_INGEST_TOKEN    — retired PR #552 (Forge-prefix consistency)
+  #   CODEX_INGEST_TOKEN    — retired PR #544 (mechanical rename)
+  #   FORGE_INGEST_TOKEN    — current ingest token; sweep so a stale value
+  #                           can't shadow the 1Password-sourced one.
+  # Idempotent — missing entries are not errors.
+  local stale_names="FORGE_PACKAGE_TOKEN FORGE_ACCESS_TOKEN FORGE_CODEX_TOKEN ATLAS_INGEST_TOKEN CODEX_INGEST_TOKEN FORGE_INGEST_TOKEN"
+  local name
+  if have security; then
+    for name in $stale_names; do
+      if security find-generic-password -s "$name" -a "$USER" -w >/dev/null 2>&1; then
+        security delete-generic-password -s "$name" -a "$USER" >/dev/null 2>&1 || true
+        info "swept stale Keychain entry: $name"
+      fi
+    done
+  elif have secret-tool; then
+    for name in $stale_names; do
+      if secret-tool lookup service "$name" >/dev/null 2>&1; then
+        secret-tool clear service "$name" >/dev/null 2>&1 || true
+        info "swept stale libsecret entry: $name"
+      fi
+    done
+  fi
+}
+
 # ── Step 1: Node $NODE_VERSION via nvm ───────────────────────────────────────
 #
 # Fast path: if exactly Node $NODE_VERSION is already active on PATH, skip
@@ -353,6 +520,12 @@ if [ -z "$SECRETS_BACKEND" ] && [ "$FORCE_TOKENS" = "false" ]; then
     printf '  keystore — skipping backend prompt and token prompts. Running in\n'
     printf '  HEAL mode (reusing stored tokens, sweeping stale state, reinstalling).\n'
     printf '  Use --force-tokens to rotate.\033[0m\n'
+  elif detect_existing_op_vault; then
+    SECRETS_BACKEND="onepassword"
+    printf '\n  \033[1;36mDetected existing FORGE_PACKAGE_TOKEN + FORGE_ACCESS_TOKEN in\n'
+    printf '  1Password vault "%s" — skipping backend prompt and token\n' "$OP_VAULT"
+    printf '  prompts. Running in HEAL mode (reusing stored tokens, sweeping stale\n'
+    printf '  state, reinstalling). Use --force-tokens to rotate.\033[0m\n'
   fi
 fi
 
@@ -362,7 +535,8 @@ if [ -z "$SECRETS_BACKEND" ]; then
     "Where should the FORGE_PACKAGE_TOKEN and FORGE_ACCESS_TOKEN be stored?" \
     "keystore" \
     "keystore" \
-    "gcp")
+    "gcp" \
+    "onepassword")
 fi
 
 step "Step 2 — secrets backend: ${SECRETS_BACKEND}"
@@ -393,6 +567,46 @@ if [ "$SECRETS_BACKEND" = "gcp" ]; then
     fi
     ok "secret '$secret' exists in $GCP_PROJECT"
   done
+elif [ "$SECRETS_BACKEND" = "onepassword" ]; then
+  if ! op_installed; then
+    if [ "$NON_INTERACTIVE" = "true" ]; then
+      die "1Password CLI ('op') not found and --non-interactive set. Install op manually (https://developer.1password.com/docs/cli/get-started/) and re-run."
+    fi
+    answer=$(prompt_choice \
+      "1Password CLI ('op') not found. Install it now?" \
+      "yes" \
+      "yes" \
+      "no")
+    if [ "$answer" = "yes" ]; then
+      install_op_cli
+    else
+      die "1Password CLI ('op') is required for --secrets=onepassword. Install: https://developer.1password.com/docs/cli/get-started/"
+    fi
+  fi
+
+  if ! op_authenticated; then
+    die "1Password CLI not authenticated. Open the 1Password desktop app → Settings → Developer → enable \"Integrate with 1Password CLI\", then re-run. (Verify with: op whoami)"
+  fi
+  # Fixed acknowledgement — `op whoami` returns the account URL / email,
+  # which is PII some compliance regimes treat as protected. The value is
+  # not the token but is unnecessary signal on the operator's terminal.
+  ok "1Password authentication verified"
+
+  info "Vault:        ${OP_VAULT}"
+  info "Package item: ${OP_PACKAGE_ITEM}"
+  info "Access item:  ${OP_ACCESS_ITEM}"
+  info "Field:        ${OP_FIELD}"
+
+  # Probe both items up front — fail fast if either is unreachable.
+  for item in "$OP_PACKAGE_ITEM" "$OP_ACCESS_ITEM"; do
+    if ! op_vault_item_resolves "$OP_VAULT" "$item" "$OP_FIELD"; then
+      die "1Password item 'op://${OP_VAULT}/${item}/${OP_FIELD}' did not resolve to a non-empty value. Check: vault name ('${OP_VAULT}'), item title ('${item}'), field name ('${OP_FIELD}'), and that your 1Password account has read access to this vault."
+    fi
+    ok "1Password item 'op://${OP_VAULT}/${item}/${OP_FIELD}' resolves"
+  done
+
+  # Enforce single source of truth — sweep any stale OS-keystore entries.
+  clear_stale_keystore_entries
 else
   if ! have security && ! have secret-tool; then
     die "no keystore found (tried: security, secret-tool). Install libsecret-tools or re-run with --secrets=gcp"
@@ -405,11 +619,13 @@ step "Step 3 — FORGE_PACKAGE_TOKEN → env var"
 
 if [ "$SECRETS_BACKEND" = "gcp" ]; then
   store_token_in_gcp "FORGE_PACKAGE_TOKEN" "$GCP_PACKAGE_SECRET"
+elif [ "$SECRETS_BACKEND" = "onepassword" ]; then
+  store_token_in_onepassword "FORGE_PACKAGE_TOKEN" "$OP_PACKAGE_ITEM"
 else
   store_token_in_keystore "FORGE_PACKAGE_TOKEN" "FORGE_PACKAGE_TOKEN (GitHub Packages read-access)"
 fi
 
-[ -n "${FORGE_PACKAGE_TOKEN:-}" ] || die "FORGE_PACKAGE_TOKEN empty after setup — check keystore/GCP configuration"
+[ -n "${FORGE_PACKAGE_TOKEN:-}" ] || die "FORGE_PACKAGE_TOKEN empty after setup — check keystore/GCP/1Password configuration"
 ok "FORGE_PACKAGE_TOKEN populated in current shell (length=${#FORGE_PACKAGE_TOKEN})"
 
 # ── Step 4: ~/.npmrc ─────────────────────────────────────────────────────────
@@ -447,8 +663,34 @@ if [ -n "$npm_prefix" ]; then
   done
 fi
 
+# Intentionally no version pin: `npm install -g @bigbrainforge/forge-plugin`
+# resolves to the `@latest` dist-tag, which the release pipeline sets on
+# every publish (release.yml publish-plugin step). The post-install verify
+# below asserts we got @latest, fails loud if the registry returned an
+# older version (corp mirror lag, npm cache poisoning, etc.).
 npm install -g "$PACKAGE_NAME" --no-audit --no-fund
-ok "installed ${PACKAGE_NAME}"
+ok "ran npm install -g ${PACKAGE_NAME}"
+
+# `npm list -g <pkg> --depth=0` prints lines like:
+#   /usr/local/lib
+#   └── @bigbrainforge/forge-plugin@2.2.0
+# Split each line on `@`; for a scoped package the version is always the
+# last @-delimited field (the leading `@` in the scope is the first delimiter
+# producing an empty field, the second `@` precedes the version).
+INSTALLED=$(npm list -g "$PACKAGE_NAME" --depth=0 2>/dev/null \
+  | awk -F@ '/'"$(printf '%s' "$PACKAGE_NAME" | sed 's:[/&]:\\&:g')"'@/ {print $NF; exit}')
+LATEST=$(npm view "$PACKAGE_NAME" version 2>/dev/null || echo "")
+if [ -n "$INSTALLED" ] && [ -n "$LATEST" ]; then
+  if [ "$INSTALLED" = "$LATEST" ]; then
+    ok "installed ${PACKAGE_NAME}@${INSTALLED} (matches registry @latest)"
+  else
+    die "version mismatch: installed ${INSTALLED} but registry @latest is ${LATEST}. Possible causes: stale npm cache (npm cache clean --force), corporate registry mirror lag, or an incomplete release publish. Re-run after resolving."
+  fi
+elif [ -n "$INSTALLED" ]; then
+  warn "installed ${PACKAGE_NAME}@${INSTALLED} but could not query registry @latest to verify (network / auth)"
+else
+  warn "${PACKAGE_NAME} installed but version could not be determined"
+fi
 
 # ── Step 6: FORGE_ACCESS_TOKEN ────────────────────────────────────────────────
 
@@ -456,6 +698,8 @@ step "Step 6 — FORGE_ACCESS_TOKEN → env var"
 
 if [ "$SECRETS_BACKEND" = "gcp" ]; then
   store_token_in_gcp "FORGE_ACCESS_TOKEN" "$GCP_ACCESS_SECRET"
+elif [ "$SECRETS_BACKEND" = "onepassword" ]; then
+  store_token_in_onepassword "FORGE_ACCESS_TOKEN" "$OP_ACCESS_ITEM"
 else
   store_token_in_keystore "FORGE_ACCESS_TOKEN" "FORGE_ACCESS_TOKEN (Forge MCP endpoint)"
 fi
@@ -517,8 +761,12 @@ if [ "$SKIP_VERIFY" = "true" ]; then
   step "Step 8 — verify (skipped by flag)"
 else
   step "Step 8 — verify"
-  if [ ! -f "$HOME/.claude/commands/forge/new.md" ]; then
-    die "~/.claude/commands/forge/new.md missing — plugin install did not complete"
+  # Verify the canonical entry-point command landed. /forge:goal is the
+  # entry point as of v2.2 (PR #574 deprecated and archived /forge:new);
+  # this check is the durable invariant — every supported plugin version
+  # ships goal.md.
+  if [ ! -f "$HOME/.claude/commands/forge/goal.md" ]; then
+    die "~/.claude/commands/forge/goal.md missing — plugin install did not complete"
   fi
   ok "slash commands installed at ~/.claude/commands/forge/"
   if [ ! -f "$HOME/.claude/forge/VERSION" ]; then
@@ -550,7 +798,7 @@ $(printf '\033[1;32m✓ Forge plugin installed successfully.\033[0m')
     1. Open a new shell (or source $PROFILE) — see above.
     2. Launch Claude Code from that shell so it inherits the env vars.
     3. In Claude Code, run:  /forge:help
-    4. Start your first session:  /forge:new
+    4. Start your first goal:    /forge:goal "<your-objective>"
 
   The plugin runs against your Forge MCP endpoint. No local CLI needed —
   atlas indexing is handled centrally by the Forge team.
