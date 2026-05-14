@@ -133,7 +133,7 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
-$ScriptVersion = '0.2.0'
+$ScriptVersion = '0.3.0'
 # Exact patch pin — same version on dev box, CI, and clients. Eliminates the
 # "works locally, fails on CI" class of drift caused by major-only pins
 # picking different patches. Bump in lockstep with .nvmrc and CI workflows.
@@ -143,6 +143,40 @@ $RegistryUrl = 'https://npm.pkg.github.com'
 $RegistryHost = 'npm.pkg.github.com'
 $PatVar = 'FORGE_PACKAGE_TOKEN'
 $TokVar = 'FORGE_ACCESS_TOKEN'
+
+# ── Auto-detect non-interactive context (no controlling TTY) ─────────────────
+#
+# When the installer runs through an agent shell (Claude Code's pwsh tool, CI
+# without an allocated console, redirected stdin), Read-Host reads from the
+# redirected stream rather than a real console. Without a real console the
+# prompt helpers would either block on empty input or echo unanswerable
+# questions into the agent's transcript. Detect that case once at startup and
+# auto-engage -NonInteractive so the prompts use defaults silently. Users
+# running through an agent must supply all needed values via flags; the
+# helpers below already enforce "required value missing" with a clear Die
+# (e.g. -GcpProject under -Secrets gcp).
+#
+# Windows analogue of the install.sh `: > /dev/tty` write-test: check whether
+# stdin OR stdout is redirected. Either redirection rules out a real TTY.
+if (-not $NonInteractive) {
+    try {
+        if ([Console]::IsInputRedirected -or [Console]::IsOutputRedirected) {
+            $NonInteractive = $true
+        }
+    } catch {
+        # [Console] members not available (rare hosts) — assume non-interactive
+        # rather than crashing the installer on startup.
+        $NonInteractive = $true
+    }
+    if ($NonInteractive) {
+        Write-Host ''
+        Write-Host '  No controlling TTY detected (agent shell, CI without a console, or' -ForegroundColor Cyan
+        Write-Host '  redirected stdin) — auto-engaging -NonInteractive. Defaults will' -ForegroundColor Cyan
+        Write-Host '  be used for every prompt. If the script aborts below for a missing' -ForegroundColor Cyan
+        Write-Host '  required value, re-run in a real terminal OR pass that value as a' -ForegroundColor Cyan
+        Write-Host '  parameter (see Get-Help .\install.ps1 -Full).' -ForegroundColor Cyan
+    }
+}
 
 # ── Prompt helpers ──────────────────────────────────────────────────────────
 
@@ -617,7 +651,20 @@ elseif ($Secrets -eq 'onepassword') {
     }
 
     if (-not (Test-OpAuthenticated)) {
-        Die '1Password CLI installed but not signed in. Enable desktop integration: open the 1Password app -> Settings -> Developer -> tick "Integrate with 1Password CLI", then re-run this installer.'
+        Die @'
+1Password CLI not authenticated.
+
+  Fix:
+    1. Open the 1Password desktop app -> Settings -> Developer ->
+       enable "Integrate with 1Password CLI".
+    2. On first integration the desktop app prompts for Windows Hello /
+       system password — that prompt can only be answered in a real
+       terminal session, NOT through Claude Code or another agent
+       shell. If you launched this installer through an agent, exit and
+       re-run from Windows Terminal / PowerShell directly.
+    3. Verify in your shell:  op whoami
+    4. Re-run this installer.
+'@
     }
 
     Write-InfoMsg "1Password vault:  $OpVault"
