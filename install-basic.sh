@@ -151,3 +151,5 @@ else
 fi
 
 exit "$installer_exit"
+
+# forge release: forge-v2.4.0

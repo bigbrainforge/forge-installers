@@ -197,3 +197,5 @@ printf '  Press %sEnter%s to close this window: ' "$BOLD" "$RESET"
 read -r _ || true
 
 exit "$installer_exit"
+
+# forge release: forge-v2.4.0

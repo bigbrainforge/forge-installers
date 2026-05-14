@@ -840,3 +840,5 @@ $(printf '\033[1;32m✓ Forge plugin installed successfully.\033[0m')
   Troubleshooting: see client-install.md, or re-run this installer — it's
   idempotent.
 EOF
+
+# forge release: forge-v2.4.0

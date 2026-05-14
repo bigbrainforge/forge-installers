@@ -1120,3 +1120,5 @@ Write-Host '  atlas indexing is handled centrally by the Forge team.'
 Write-Host ''
 Write-Host '  Troubleshooting: see client-install.md, or re-run this installer —'
 Write-Host '  it is idempotent.'
+
+# forge release: forge-v2.4.0

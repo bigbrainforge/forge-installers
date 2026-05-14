@@ -693,3 +693,5 @@ The 1Password backend reduces engineer onboarding to "add to vault → run insta
 - **Install issues:** contact your BigBrain representative with the installer output + `cat ~/.claude/forge/VERSION`.
 - **Plugin / slash-command issues:** include the full command + output.
 - **Security concerns:** email security@bigbrainforge.com — do not file as public GitHub issues.
+
+<!-- forge release: forge-v2.4.0 -->
