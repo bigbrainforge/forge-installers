@@ -30,7 +30,7 @@
 
 set -euo pipefail
 
-SCRIPT_VERSION="0.2.0"
+SCRIPT_VERSION="0.3.0"
 # Exact patch pin — same version on dev box, CI, and clients. Eliminates the
 # "works locally, fails on CI" class of drift caused by major-only pins
 # picking different patches. Bump in lockstep with .nvmrc and CI workflows.
@@ -144,6 +144,29 @@ if [ -n "$SECRETS_BACKEND" ]; then
     keystore|gcp|onepassword) ;;
     *) printf 'invalid --secrets=%s (must be keystore, gcp, or onepassword)\n' "$SECRETS_BACKEND" >&2; exit 2;;
   esac
+fi
+
+# ── Auto-detect non-interactive context (no controlling TTY) ─────────────────
+#
+# When the installer runs through an agent shell (Claude Code, CI without a
+# pseudo-TTY, `bash <script.sh` redirected stdin), `/dev/tty` is not writable.
+# The prompt helpers below redirect through /dev/tty for `curl | bash`
+# compatibility — but if the device is unusable, every prompt would flood
+# stderr with `/dev/tty: Device not configured` (macOS) or `No such device or
+# address` (Linux) before falling back to the empty default. Detect that case
+# once at startup and auto-engage NON_INTERACTIVE so the prompts use defaults
+# silently. Users running through an agent must supply all needed values via
+# flags; the helpers below already enforce "required value missing" with a
+# clear `die` (e.g. --gcp-project under --secrets=gcp).
+if [ "$NON_INTERACTIVE" = "false" ]; then
+  if ! { : > /dev/tty; } 2>/dev/null; then
+    NON_INTERACTIVE=true
+    printf '\n  \033[1;36mNo controlling TTY detected (agent shell, CI without -t, or\n'
+    printf '  redirected stdin) — auto-engaging --non-interactive. Defaults will\n'
+    printf '  be used for every prompt. If the script aborts below for a missing\n'
+    printf '  required value, re-run in a real terminal OR pass that value as a\n'
+    printf '  flag (see --help).\033[0m\n'
+  fi
 fi
 
 # ── Validate OP_* inputs (shell-injection guard) ─────────────────────────────
@@ -585,7 +608,18 @@ elif [ "$SECRETS_BACKEND" = "onepassword" ]; then
   fi
 
   if ! op_authenticated; then
-    die "1Password CLI not authenticated. Open the 1Password desktop app → Settings → Developer → enable \"Integrate with 1Password CLI\", then re-run. (Verify with: op whoami)"
+    die "1Password CLI not authenticated.
+
+  Fix:
+    1. Open the 1Password desktop app → Settings → Developer →
+       enable \"Integrate with 1Password CLI\".
+    2. (macOS only) On first integration the desktop app prompts for
+       Touch ID / system password — that prompt can only be answered in
+       a real terminal session, NOT through Claude Code or another agent
+       shell. If you launched this installer through an agent, exit and
+       re-run from Terminal.app / iTerm.
+    3. Verify in your shell:  op whoami
+    4. Re-run this installer."
   fi
   # Fixed acknowledgement — `op whoami` returns the account URL / email,
   # which is PII some compliance regimes treat as protected. The value is

@@ -51,6 +51,25 @@ The installer handles everything: Node 22 via nvm, registry config, secret stora
 
 Both installer scripts are served from `bigbrainforge/forge-installers` (public repo, no auth required to download), so `curl` / `Invoke-WebRequest` work before you've configured any tokens.
 
+### macOS — single-click install (recommended for 1Password orgs)
+
+If your organisation uses the 1Password secrets backend, download **`install.command`** instead of `install.sh` and double-click it in Finder. The wrapper opens Terminal, fetches the latest `install.sh`, and runs it with `--secrets=onepassword --op-vault='Platform - AI - FORGE'` pre-set. The only prompt is the one-time Touch ID approval for 1Password CLI integration (macOS security; cannot be scripted).
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/bigbrainforge/forge-installers/main/install.command -o ~/Downloads/install.command
+chmod +x ~/Downloads/install.command
+open ~/Downloads/install.command   # or double-click it in Finder
+```
+
+**Gatekeeper note (first run only):** until the file is signed with an Apple Developer ID + notarized, macOS will show "cannot be opened because it is from an unidentified developer" on the first double-click. Right-click → **Open** → confirm, and macOS remembers the approval. A notarized `.pkg` will replace this workaround in a later cut.
+
+**Prerequisites the wrapper assumes:**
+- Homebrew is already installed (`/opt/homebrew/bin/brew` exists). If not, install from [brew.sh](https://brew.sh) first.
+- 1Password.app is installed in `/Applications/`. If not, install from [1password.com/downloads/mac/](https://1password.com/downloads/mac/) first.
+- Your account has read access to the shared `Platform - AI - FORGE` vault (or whatever name your operator gave you — override with `FORGE_OP_VAULT='<your-vault>' open install.command`).
+
+If any of those are missing, the wrapper bails early with a clear message before downloading Node or touching anything else.
+
 ### macOS (Apple Silicon) / Linux
 
 ```bash
