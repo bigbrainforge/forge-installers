@@ -2,7 +2,7 @@
 # @bigbrainforge/forge-plugin — macOS / Linux installer.
 #
 # One-command client install for the Claude Code plugin. Handles:
-#   - nvm install (if missing) + Node 22 LTS
+#   - nvm install (if missing) + Node 24 LTS
 #   - FORGE_PACKAGE_TOKEN storage (OS Keychain, GCP Secret Manager, or 1Password)
 #   - ~/.npmrc registry + auth config
 #   - npm install -g @bigbrainforge/forge-plugin
@@ -34,7 +34,7 @@ SCRIPT_VERSION="0.3.0"
 # Exact patch pin — same version on dev box, CI, and clients. Eliminates the
 # "works locally, fails on CI" class of drift caused by major-only pins
 # picking different patches. Bump in lockstep with .nvmrc and CI workflows.
-NODE_VERSION="22.22.2"
+NODE_VERSION="24.15.0"
 PACKAGE_NAME="@bigbrainforge/forge-plugin"
 REGISTRY_URL="https://npm.pkg.github.com"
 REGISTRY_HOST="npm.pkg.github.com"
@@ -466,7 +466,7 @@ clear_stale_keystore_entries() {
 # Slow path: nvm install $NODE_VERSION — idempotent, won't re-download if
 # already present. Pinning to the exact patch ensures every Forge client
 # runs the same Node binary the sealed bundle was built against (Node ABI
-# 127 for 22.x — tree-sitter prebuilds match).
+# 137 for 24.x — tree-sitter natives compile from source on install).
 
 step "Step 1 — Node ${NODE_VERSION}"
 
@@ -481,8 +481,38 @@ else
   export NVM_DIR="${NVM_DIR:-$HOME/.nvm}"
 
   if [ ! -s "$NVM_DIR/nvm.sh" ]; then
-    info "nvm not found — installing to $NVM_DIR"
-    curl -fsSL https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.1/install.sh | bash
+    info "nvm not found — installing to $NVM_DIR (sha256-verified)"
+    # Download-verify-execute pattern. The pre-existing `curl ... | bash`
+    # form (replaced 2026-05-19) violated the supply-chain-shield rule
+    # against piping remote content to a shell. The v0.40.1 install.sh
+    # SHA256 below was captured directly from
+    # https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.1/install.sh
+    # by the Forge dev shell that authored this commit. Re-validate before
+    # bumping the version pin: the value MUST match a freshly-downloaded
+    # copy of the new release tag's install.sh before the corresponding
+    # release gets cut.
+    NVM_INSTALL_URL="https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.1/install.sh"
+    NVM_INSTALL_SHA256="abdb525ee9f5b48b34d8ed9fc67c6013fb0f659712e401ecd88ab989b3af8f53"
+    NVM_INSTALL_TMP="$(mktemp -t forge-nvm-install.XXXXXX)"
+    trap 'rm -f "$NVM_INSTALL_TMP"' EXIT
+    curl -fsSL "$NVM_INSTALL_URL" -o "$NVM_INSTALL_TMP" \
+      || die "failed to download nvm install.sh from $NVM_INSTALL_URL"
+    # Portable SHA256: prefer sha256sum (Linux), fall back to shasum -a 256
+    # (macOS default; shasum ships in /usr/bin on every macOS install).
+    if have sha256sum; then
+      actual_sha=$(sha256sum "$NVM_INSTALL_TMP" | awk '{print $1}')
+    elif have shasum; then
+      actual_sha=$(shasum -a 256 "$NVM_INSTALL_TMP" | awk '{print $1}')
+    else
+      die "no SHA256 tool found (tried: sha256sum, shasum). Cannot verify nvm install script."
+    fi
+    if [ "$actual_sha" != "$NVM_INSTALL_SHA256" ]; then
+      die "nvm install.sh SHA256 mismatch — expected ${NVM_INSTALL_SHA256}, got ${actual_sha}. Refusing to execute unverified script. If you intend to bump the nvm version pin, update both the URL and NVM_INSTALL_SHA256 in this script."
+    fi
+    ok "nvm install.sh SHA256 verified (${NVM_INSTALL_SHA256:0:16}…)"
+    bash "$NVM_INSTALL_TMP"
+    rm -f "$NVM_INSTALL_TMP"
+    trap - EXIT
   fi
 
   # shellcheck source=/dev/null
@@ -841,4 +871,4 @@ $(printf '\033[1;32m✓ Forge plugin installed successfully.\033[0m')
   idempotent.
 EOF
 
-# forge release: forge-v2.9.1
+# forge release: forge-v2.10.0

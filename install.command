@@ -81,7 +81,7 @@ cat <<BANNER
   ${BOLD}Forge plugin — macOS installer${RESET}
 
   This will install:
-    ${CYAN}•${RESET} Node.js 22.22.2 (via nvm)
+    ${CYAN}•${RESET} Node.js 24.15.0 (via nvm)
     ${CYAN}•${RESET} 1Password CLI (op) — via Homebrew if not present
     ${CYAN}•${RESET} @bigbrainforge/forge-plugin (latest)
     ${CYAN}•${RESET} Slash commands + hooks + statusline at ~/.claude/
@@ -198,4 +198,4 @@ read -r _ || true
 
 exit "$installer_exit"
 
-# forge release: forge-v2.9.1
+# forge release: forge-v2.10.0

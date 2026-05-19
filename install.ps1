@@ -5,7 +5,7 @@
 .DESCRIPTION
     One-command client install for the Forge Claude Code plugin. Handles:
       - nvm-windows detection (installs via winget if available)
-      - Node 22 LTS install + use
+      - Node 24 LTS install + use
       - FORGE_PACKAGE_TOKEN storage (Windows Credential Manager, GCP Secret Manager, or 1Password)
       - .npmrc registry + auth config
       - npm install -g @bigbrainforge/forge-plugin
@@ -137,7 +137,7 @@ $ScriptVersion = '0.3.0'
 # Exact patch pin — same version on dev box, CI, and clients. Eliminates the
 # "works locally, fails on CI" class of drift caused by major-only pins
 # picking different patches. Bump in lockstep with .nvmrc and CI workflows.
-$NodeVersion = '22.22.2'
+$NodeVersion = '24.15.0'
 $PackageName = '@bigbrainforge/forge-plugin'
 $RegistryUrl = 'https://npm.pkg.github.com'
 $RegistryHost = 'npm.pkg.github.com'
@@ -493,7 +493,7 @@ function Clear-StaleKeystoreEntries {
 # $NodeVersion`, refresh $env:Path so the just-activated Node is visible
 # downstream in this session. Pinning to the exact patch ensures every
 # Forge client runs the same Node binary the sealed bundle was built
-# against (Node ABI 127 for 22.x — tree-sitter prebuilds match).
+# against (Node ABI 137 for 24.x — tree-sitter natives compile from source on install).
 
 # Helper: safely read node version without tripping $ErrorActionPreference='Stop'.
 function Get-NodeVersionSafe {
@@ -1121,4 +1121,4 @@ Write-Host ''
 Write-Host '  Troubleshooting: see client-install.md, or re-run this installer —'
 Write-Host '  it is idempotent.'
 
-# forge release: forge-v2.9.1
+# forge release: forge-v2.10.0

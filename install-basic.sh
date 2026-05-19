@@ -22,7 +22,7 @@
 #      Claude Code from that shell.
 #
 # What it installs (idempotent — safe to re-run):
-#   • Node.js 22.22.2 (via nvm)
+#   • Node.js 24.15.0 (via nvm)
 #   • @bigbrainforge/forge-plugin (latest)
 #   • Two entries in the macOS Keychain (under your user account)
 #   • Shell-profile lines (~/.zshrc) that re-read both tokens from
@@ -65,7 +65,7 @@ cat <<BANNER
   ${BOLD}Forge plugin — basic installer (no 1Password)${RESET}
 
   This will install (globally, idempotent):
-    ${CYAN}•${RESET} Node.js 22.22.2 (via nvm)
+    ${CYAN}•${RESET} Node.js 24.15.0 (via nvm)
     ${CYAN}•${RESET} @bigbrainforge/forge-plugin (latest)
     ${CYAN}•${RESET} Two entries in macOS Keychain (FORGE_PACKAGE_TOKEN, FORGE_ACCESS_TOKEN)
 
@@ -152,4 +152,4 @@ fi
 
 exit "$installer_exit"
 
-# forge release: forge-v2.9.1
+# forge release: forge-v2.10.0

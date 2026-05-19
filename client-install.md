@@ -2,8 +2,10 @@
 
 **Package:** `@bigbrainforge/forge-plugin`
 **Supported platforms:** Windows x64, macOS arm64 (Apple Silicon), Linux x64
-**Runtime:** Node 22 LTS (installer sets this up for you)
+**Runtime:** Node 24 LTS (installer sets this up for you)
 **Requires:** Claude Code already installed ([claude.ai/code](https://claude.ai/code))
+
+> **Runtime change — Node 22 → Node 24.** Forge advanced its primary runtime from Node 22.22.2 to Node 24.15.0 (Krypton LTS) in the release that ships with this doc. The installer handles the Node bump for you (installs Node 24.15.0 via nvm / nvm-windows; the previous Node 22 install is left in place). Sealed bundles in this release ship for Node 24 only — `npm install -g @bigbrainforge/forge-plugin` running under Node 22 will install but the runtime contract is Node 24; re-run `install.sh` / `install.ps1` to align. The matrix can be expanded back to `[22, 24]` (see [`release.yml`](https://github.com/bigbrainforge/forge/blob/main/.github/workflows/release.yml) seal job) by Forge maintainers if a client genuinely needs Node 22 backwards-compat — file the request via the [Forge issue tracker](https://thebanffpractice.atlassian.net/browse/BBF). Semver: this is a minor/major release per the runtime bump.
 
 The Forge plugin is a Claude Code plugin — it adds slash commands (`/forge:goal`, `/forge:review`, `/forge:done`, `/forge:status`, etc.), a statusline hook, and registers the Forge MCP server in your Claude Code config. All orchestration runs server-side on the Forge MCP endpoint; the plugin itself is pure configuration and does not run atlas indexing locally.
 
@@ -47,7 +49,7 @@ If your organisation uses **1Password (Business or Teams)**, BigBrain will work 
 
 ## 2. Quick install (recommended)
 
-The installer handles everything: Node 22 via nvm, registry config, secret storage, plugin install, shell profile wiring, and verification. It **prompts** for the choices it needs — no flags required for normal use. Re-running is safe.
+The installer handles everything: Node 24 via nvm, registry config, secret storage, plugin install, shell profile wiring, and verification. It **prompts** for the choices it needs — no flags required for normal use. Re-running is safe.
 
 Both installer scripts are served from `bigbrainforge/forge-installers` (public repo, no auth required to download), so `curl` / `Invoke-WebRequest` work before you've configured any tokens.
 
@@ -375,13 +377,13 @@ When Forge ships a newer template (a new event source, hardened guard, env-var t
 
 Use this path only if the installer fails and you need to debug, or if your environment has restrictions that prevent the installer from running.
 
-### 5.1 Install Node 22 LTS
+### 5.1 Install Node 24 LTS
 
 **macOS / Linux:**
 ```bash
 curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.1/install.sh | bash
 # reload shell, then:
-nvm install 22 && nvm use 22 && nvm alias default 22
+nvm install 24 && nvm use 24 && nvm alias default 24
 ```
 
 **Windows:**
@@ -759,4 +761,4 @@ The 1Password backend reduces engineer onboarding to "add to vault → run insta
 - **Plugin / slash-command issues:** include the full command + output.
 - **Security concerns:** email security@bigbrainforge.com — do not file as public GitHub issues.
 
-<!-- forge release: forge-v2.9.1 -->
+<!-- forge release: forge-v2.10.0 -->
