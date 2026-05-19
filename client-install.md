@@ -306,6 +306,71 @@ If slash commands fail with a clear auth error, the shell Claude Code inherited 
 
 ---
 
+## 4.5 Wire Atlas reindex CI (recommended)
+
+Without auto-reindex CI, your Atlas Map drifts as code lands on `main`. The Forge MCP server's `/forge:goal` Atlas pre-fetch then surfaces stale-Atlas reindex prompts on every iteration, and graph results lag the actual repo state. Wiring this once gives your repo the same auto-reindex behaviour the `bigbrainforge/forge` repo has — every merge to `main` triggers a re-index push, so the next `/forge:goal` reasons on fresh graph truth.
+
+### What `/forge:setup ci-reindex` does
+
+The subcommand stamps a workflow file at `.github/workflows/atlas-reindex-on-merge.yml` into your repo. Once stamped, your repo **owns the file** — the operator commits it like any other source. Re-running the subcommand updates the same file in place; it is idempotent and never duplicates. The version banner at the top of the workflow records which Forge version stamped it, so a later `/forge:setup ci-reindex` shows a clean diff when the template evolves (new event source, hardened guard, etc.).
+
+### Wire the repo secret first
+
+CI needs its own copy of `FORGE_ACCESS_TOKEN`. Per [`.claude/rules/token-isolation.md`](../../../.claude/rules/token-isolation.md), your **workstation token must not be reused for CI** — mint a separate value for the GitHub repo secret so a CI-side leak cannot compromise the developer keystore. Coordinate with your BigBrain operator to mint the second token (same `openssl rand -base64 32` provenance) and add it as a server-side principal on the Forge MCP endpoint.
+
+In your client repo on GitHub:
+
+1. **Settings → Secrets and variables → Actions → New repository secret**
+   - Name: `FORGE_ACCESS_TOKEN`
+   - Value: the CI-only bearer token (NOT the workstation value)
+   - This is a **GitHub repo secret** (encrypted at rest, exposed only to workflows that reference `secrets.FORGE_ACCESS_TOKEN`).
+
+2. **Settings → Secrets and variables → Actions → New repository secret** (second secret)
+   - Name: `FORGE_PACKAGE_TOKEN`
+   - Value: a **CI-only** GitHub PAT with **`read:packages` scope ONLY** (least-privilege — no `repo`, no `write:packages`)
+   - This is what `npm install` in the workflow uses to pull `@bigbrainforge/forge` from the `@bigbrainforge` GitHub Packages registry so the `forge atlas index --push` step has a `forge` binary on the runner.
+   - Per [`.claude/rules/token-isolation.md`](../../../.claude/rules/token-isolation.md), **mint a separate PAT for CI** — do NOT reuse your workstation `FORGE_PACKAGE_TOKEN`. Same rationale as the access token above: a CI-side leak must not compromise the developer keystore. Generate via GitHub → Settings → Developer settings → Personal access tokens → Fine-grained tokens (or classic) with **only** the `read:packages` scope checked.
+
+3. **Settings → Secrets and variables → Actions → Variables tab → New repository variable** (optional)
+   - Name: `FORGE_MCP_URL`
+   - Value: your MCP endpoint, e.g. `https://forge-mcp.bigbrainforge.com`
+   - Leave it unset to accept the workflow default of `https://mcp.bigbrainforge.com`. This is a **variable**, not a secret — the URL is not sensitive, and putting it in the variables tab keeps it visible in the Actions UI for debugging.
+
+### Step-by-step
+
+```bash
+# 1. Install the sealed CLI bundle so the workflow's `forge atlas index --push`
+#    step has a `forge` binary in CI. The workstation installer already did this
+#    for your dev machine; CI needs its own install step that the template bakes in.
+npm install -g --ignore-scripts @bigbrainforge/forge@latest
+
+# 2. From inside the client repo, stamp the workflow file via Claude Code:
+claude
+# then in Claude Code:
+/forge:setup ci-reindex
+
+# 3. Commit the stamped file to main so future PR merges fire it.
+git add .github/workflows/atlas-reindex-on-merge.yml
+git commit -m "ci: add Atlas reindex on merge"
+git push
+```
+
+Then open a trivial PR, merge it, and watch the workflow run in the **Actions** tab.
+
+### Verifying the workflow ran
+
+```bash
+gh run list --workflow=atlas-reindex-on-merge.yml --limit 3
+```
+
+The job's last step prints `Atlas re-index pushed to <url> successfully.` on success. Failed runs upload `atlas-stderr.log` as an artifact on the run page — download it from the run summary for debugging without touching production state.
+
+### Updating the template later
+
+When Forge ships a newer template (a new event source, hardened guard, env-var tweak, etc.), the operator re-runs `/forge:setup ci-reindex` from inside the client repo and commits the diff. The version banner at the top of the workflow shows which Forge version stamped it; comparing it against `cat ~/.claude/forge/VERSION` tells you whether a re-stamp is worth doing.
+
+---
+
 ## 5. Manual install (fallback / reference)
 
 Use this path only if the installer fails and you need to debug, or if your environment has restrictions that prevent the installer from running.
@@ -694,4 +759,4 @@ The 1Password backend reduces engineer onboarding to "add to vault → run insta
 - **Plugin / slash-command issues:** include the full command + output.
 - **Security concerns:** email security@bigbrainforge.com — do not file as public GitHub issues.
 
-<!-- forge release: forge-v2.8.1 -->
+<!-- forge release: forge-v2.9.1 -->
