@@ -1,0 +1,6 @@
+{
+  "statusLine": {
+    "type": "command",
+    "command": "node -e \"require(require('path').join(require('os').homedir(),'.claude','hooks','forge-statusline.js'))\""
+  }
+}
