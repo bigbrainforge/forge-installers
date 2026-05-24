@@ -761,4 +761,4 @@ The 1Password backend reduces engineer onboarding to "add to vault → run insta
 - **Plugin / slash-command issues:** include the full command + output.
 - **Security concerns:** email security@bigbrainforge.com — do not file as public GitHub issues.
 
-<!-- forge release: forge-v2.23.1 -->
+<!-- forge release: forge-v2.23.2 -->
