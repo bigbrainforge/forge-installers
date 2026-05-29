@@ -318,7 +318,7 @@ The subcommand stamps a workflow file at `.github/workflows/atlas-reindex-on-mer
 
 ### Wire the repo secret first
 
-CI needs its own copy of `FORGE_ACCESS_TOKEN`. Per [`.claude/rules/token-isolation.md`](../../../.claude/rules/token-isolation.md), your **workstation token must not be reused for CI** — mint a separate value for the GitHub repo secret so a CI-side leak cannot compromise the developer keystore. Coordinate with your BigBrain operator to mint the second token (same `openssl rand -base64 32` provenance) and add it as a server-side principal on the Forge MCP endpoint.
+CI needs its own copy of `FORGE_ACCESS_TOKEN`. Per [`.forge/practices/token-isolation.md`](../../../.forge/practices/token-isolation.md), your **workstation token must not be reused for CI** — mint a separate value for the GitHub repo secret so a CI-side leak cannot compromise the developer keystore. Coordinate with your BigBrain operator to mint the second token (same `openssl rand -base64 32` provenance) and add it as a server-side principal on the Forge MCP endpoint.
 
 In your client repo on GitHub:
 
@@ -331,7 +331,7 @@ In your client repo on GitHub:
    - Name: `FORGE_PACKAGE_TOKEN`
    - Value: a **CI-only** GitHub PAT with **`read:packages` scope ONLY** (least-privilege — no `repo`, no `write:packages`)
    - This is what `npm install` in the workflow uses to pull `@bigbrainforge/forge` from the `@bigbrainforge` GitHub Packages registry so the `forge atlas index --push` step has a `forge` binary on the runner.
-   - Per [`.claude/rules/token-isolation.md`](../../../.claude/rules/token-isolation.md), **mint a separate PAT for CI** — do NOT reuse your workstation `FORGE_PACKAGE_TOKEN`. Same rationale as the access token above: a CI-side leak must not compromise the developer keystore. Generate via GitHub → Settings → Developer settings → Personal access tokens → Fine-grained tokens (or classic) with **only** the `read:packages` scope checked.
+   - Per [`.forge/practices/token-isolation.md`](../../../.forge/practices/token-isolation.md), **mint a separate PAT for CI** — do NOT reuse your workstation `FORGE_PACKAGE_TOKEN`. Same rationale as the access token above: a CI-side leak must not compromise the developer keystore. Generate via GitHub → Settings → Developer settings → Personal access tokens → Fine-grained tokens (or classic) with **only** the `read:packages` scope checked.
 
 3. **Settings → Secrets and variables → Actions → Variables tab → New repository variable** (optional)
    - Name: `FORGE_MCP_URL`
@@ -761,4 +761,4 @@ The 1Password backend reduces engineer onboarding to "add to vault → run insta
 - **Plugin / slash-command issues:** include the full command + output.
 - **Security concerns:** email security@bigbrainforge.com — do not file as public GitHub issues.
 
-<!-- forge release: forge-v2.29.0 -->
+<!-- forge release: forge-v2.30.0 -->
