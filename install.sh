@@ -736,8 +736,18 @@ fi
 # every publish (release.yml publish-plugin step). The post-install verify
 # below asserts we got @latest, fails loud if the registry returned an
 # older version (corp mirror lag, npm cache poisoning, etc.).
-npm install -g "$PACKAGE_NAME" --no-audit --no-fund
-ok "ran npm install -g ${PACKAGE_NAME}"
+#
+# --ignore-scripts: mandatory supply-chain default (the plugin ships no
+#   install scripts, so it's a safe no-op that satisfies the rule; the
+#   `forge-plugin` bin is run explicitly below, not via a lifecycle script).
+# --min-release-age=0: exempt this first-party @bigbrainforge/* install from
+#   any client-side publish cooldown (min-release-age) — the cooldown defends
+#   against third-party compromise; we publish this package ourselves via the
+#   tag-gated release workflow. A client installing within the cooldown window
+#   right after a release would otherwise be blocked. See
+#   .forge/practices/first-party-publish-cooldown-bypass.md.
+npm install -g --ignore-scripts --min-release-age=0 "$PACKAGE_NAME" --no-audit --no-fund
+ok "ran npm install -g --ignore-scripts --min-release-age=0 ${PACKAGE_NAME}"
 
 # `npm list -g <pkg> --depth=0` prints lines like:
 #   /usr/local/lib
@@ -770,11 +780,15 @@ step "Step 5.5 — install ${CLI_PACKAGE_NAME}"
 # the published bundle already carries the prebuild, so no install-time
 # compile is needed. Removing this flag would re-introduce the broken
 # `--ignore-scripts`-free build path the prebuild exists to eliminate.
+# `--min-release-age=0` exempts this first-party @bigbrainforge/* install from
+# any client-side publish cooldown — without it a client installing within the
+# cooldown window right after a release hits `ETARGET / No matching version`.
+# See .forge/practices/first-party-publish-cooldown-bypass.md.
 # `@latest` resolves to the dist-tag the release pipeline sets on every publish.
-if npm install -g --ignore-scripts "${CLI_PACKAGE_NAME}@latest" --no-audit --no-fund; then
-  ok "ran npm install -g --ignore-scripts ${CLI_PACKAGE_NAME}@latest"
+if npm install -g --ignore-scripts --min-release-age=0 "${CLI_PACKAGE_NAME}@latest" --no-audit --no-fund; then
+  ok "ran npm install -g --ignore-scripts --min-release-age=0 ${CLI_PACKAGE_NAME}@latest"
 else
-  warn "could not install ${CLI_PACKAGE_NAME} — the plugin is installed and usable; run 'npm install -g --ignore-scripts ${CLI_PACKAGE_NAME}@latest' or '/forge:setup update' later to add the CLI"
+  warn "could not install ${CLI_PACKAGE_NAME} — the plugin is installed and usable; run 'npm install -g --ignore-scripts --min-release-age=0 ${CLI_PACKAGE_NAME}@latest' or '/forge:setup update' later to add the CLI"
 fi
 
 # ── Step 6: FORGE_ACCESS_TOKEN ────────────────────────────────────────────────
@@ -892,4 +906,4 @@ $(printf '\033[1;32m✓ Forge plugin installed successfully.\033[0m')
   idempotent.
 EOF
 
-# forge release: forge-v2.33.0
+# forge release: forge-v2.34.0

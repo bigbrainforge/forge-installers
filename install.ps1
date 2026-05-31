@@ -928,9 +928,18 @@ foreach ($dir in ($shimDirs | Select-Object -Unique)) {
 # every publish. The post-install verify below asserts we got @latest;
 # fails loud if the registry returned an older version (corp mirror lag,
 # npm cache poisoning, etc.).
-& npm install -g $PackageName --no-audit --no-fund
+#
+# --ignore-scripts: mandatory supply-chain default (the plugin ships no
+#   install scripts, so it's a safe no-op; the `forge-plugin` bin is run
+#   explicitly below, not via a lifecycle script).
+# --min-release-age=0: exempt this first-party @bigbrainforge/* install from
+#   any client-side publish cooldown — the cooldown defends against
+#   third-party compromise; we publish this package ourselves via the
+#   tag-gated release workflow. See
+#   .forge/practices/first-party-publish-cooldown-bypass.md.
+& npm install -g --ignore-scripts --min-release-age=0 $PackageName --no-audit --no-fund
 if ($LASTEXITCODE -ne 0) { Die 'npm install failed — see output above' }
-Write-Ok "ran npm install -g $PackageName"
+Write-Ok "ran npm install -g --ignore-scripts --min-release-age=0 $PackageName"
 
 $installedJson = & npm ls -g $PackageName --depth=0 --json 2>$null
 $installed = $null
@@ -965,12 +974,16 @@ Write-Step "Step 5.5 — install $CliPackageName"
 # the published bundle already carries the prebuild, so no install-time
 # compile is needed. Removing this flag would re-introduce the broken
 # `--ignore-scripts`-free build path the prebuild exists to eliminate.
+# `--min-release-age=0` exempts this first-party @bigbrainforge/* install from
+# any client-side publish cooldown — without it a client installing within the
+# cooldown window right after a release hits `ETARGET / No matching version`.
+# See .forge/practices/first-party-publish-cooldown-bypass.md.
 # `@latest` resolves to the dist-tag the release pipeline sets on every publish.
-& npm install -g --ignore-scripts "$CliPackageName@latest" --no-audit --no-fund
+& npm install -g --ignore-scripts --min-release-age=0 "$CliPackageName@latest" --no-audit --no-fund
 if ($LASTEXITCODE -ne 0) {
-    Write-WarnMsg "could not install $CliPackageName — the plugin is installed and usable; run 'npm install -g --ignore-scripts $CliPackageName@latest' or '/forge:setup update' later to add the CLI"
+    Write-WarnMsg "could not install $CliPackageName — the plugin is installed and usable; run 'npm install -g --ignore-scripts --min-release-age=0 $CliPackageName@latest' or '/forge:setup update' later to add the CLI"
 } else {
-    Write-Ok "ran npm install -g --ignore-scripts $CliPackageName@latest"
+    Write-Ok "ran npm install -g --ignore-scripts --min-release-age=0 $CliPackageName@latest"
 }
 
 # ── Step 6: FORGE_ACCESS_TOKEN → env var ──────────────────────────────────────
@@ -1143,4 +1156,4 @@ Write-Host ''
 Write-Host '  Troubleshooting: see client-install.md, or re-run this installer —'
 Write-Host '  it is idempotent.'
 
-# forge release: forge-v2.33.0
+# forge release: forge-v2.34.0
