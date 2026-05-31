@@ -139,6 +139,10 @@ $ScriptVersion = '0.3.0'
 # picking different patches. Bump in lockstep with .nvmrc and CI workflows.
 $NodeVersion = '24.15.0'
 $PackageName = '@bigbrainforge/forge-plugin'
+# Sealed `forge` CLI — installed directly on first install (Step 5.5) so the
+# bundled prebuilt tree-sitter native bindings reach clients without a local
+# compile. Distinct from the plugin above; always installed with --ignore-scripts.
+$CliPackageName = '@bigbrainforge/forge'
 $RegistryUrl = 'https://npm.pkg.github.com'
 $RegistryHost = 'npm.pkg.github.com'
 $PatVar = 'FORGE_PACKAGE_TOKEN'
@@ -951,6 +955,24 @@ if ($installed -and $latest) {
     Write-WarnMsg "$PackageName installed but version could not be determined"
 }
 
+# ── Step 5.5: install @bigbrainforge/forge (sealed CLI) ──────────────────────
+
+Write-Step "Step 5.5 — install $CliPackageName"
+
+# Install the sealed `forge` CLI directly on first install so the bundled
+# prebuilt tree-sitter native bindings reach clients without a local compile.
+# `--ignore-scripts` is MANDATORY here (supply-chain rule + the whole point):
+# the published bundle already carries the prebuild, so no install-time
+# compile is needed. Removing this flag would re-introduce the broken
+# `--ignore-scripts`-free build path the prebuild exists to eliminate.
+# `@latest` resolves to the dist-tag the release pipeline sets on every publish.
+& npm install -g --ignore-scripts "$CliPackageName@latest" --no-audit --no-fund
+if ($LASTEXITCODE -ne 0) {
+    Write-WarnMsg "could not install $CliPackageName — the plugin is installed and usable; run 'npm install -g --ignore-scripts $CliPackageName@latest' or '/forge:setup update' later to add the CLI"
+} else {
+    Write-Ok "ran npm install -g --ignore-scripts $CliPackageName@latest"
+}
+
 # ── Step 6: FORGE_ACCESS_TOKEN → env var ──────────────────────────────────────
 
 Write-Step "Step 6 — $TokVar → env var"
@@ -1121,4 +1143,4 @@ Write-Host ''
 Write-Host '  Troubleshooting: see client-install.md, or re-run this installer —'
 Write-Host '  it is idempotent.'
 
-# forge release: forge-v2.32.1
+# forge release: forge-v2.33.0

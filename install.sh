@@ -36,6 +36,10 @@ SCRIPT_VERSION="0.3.0"
 # picking different patches. Bump in lockstep with .nvmrc and CI workflows.
 NODE_VERSION="24.15.0"
 PACKAGE_NAME="@bigbrainforge/forge-plugin"
+# Sealed `forge` CLI — installed directly on first install (Step 5.5) so the
+# bundled prebuilt tree-sitter native bindings reach clients without a local
+# compile. Distinct from the plugin above; always installed with --ignore-scripts.
+CLI_PACKAGE_NAME="@bigbrainforge/forge"
 REGISTRY_URL="https://npm.pkg.github.com"
 REGISTRY_HOST="npm.pkg.github.com"
 GCP_PACKAGE_SECRET_DEFAULT="FORGE_PACKAGE_TOKEN"
@@ -756,6 +760,23 @@ else
   warn "${PACKAGE_NAME} installed but version could not be determined"
 fi
 
+# ── Step 5.5: install @bigbrainforge/forge (sealed CLI) ──────────────────────
+
+step "Step 5.5 — install ${CLI_PACKAGE_NAME}"
+
+# Install the sealed `forge` CLI directly on first install so the bundled
+# prebuilt tree-sitter native bindings reach clients without a local compile.
+# `--ignore-scripts` is MANDATORY here (supply-chain rule + the whole point):
+# the published bundle already carries the prebuild, so no install-time
+# compile is needed. Removing this flag would re-introduce the broken
+# `--ignore-scripts`-free build path the prebuild exists to eliminate.
+# `@latest` resolves to the dist-tag the release pipeline sets on every publish.
+if npm install -g --ignore-scripts "${CLI_PACKAGE_NAME}@latest" --no-audit --no-fund; then
+  ok "ran npm install -g --ignore-scripts ${CLI_PACKAGE_NAME}@latest"
+else
+  warn "could not install ${CLI_PACKAGE_NAME} — the plugin is installed and usable; run 'npm install -g --ignore-scripts ${CLI_PACKAGE_NAME}@latest' or '/forge:setup update' later to add the CLI"
+fi
+
 # ── Step 6: FORGE_ACCESS_TOKEN ────────────────────────────────────────────────
 
 step "Step 6 — FORGE_ACCESS_TOKEN → env var"
@@ -871,4 +892,4 @@ $(printf '\033[1;32m✓ Forge plugin installed successfully.\033[0m')
   idempotent.
 EOF
 
-# forge release: forge-v2.32.1
+# forge release: forge-v2.33.0
