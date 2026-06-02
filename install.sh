@@ -906,4 +906,4 @@ $(printf '\033[1;32m✓ Forge plugin installed successfully.\033[0m')
   idempotent.
 EOF
 
-# forge release: forge-v2.37.2
+# forge release: forge-v2.37.3
