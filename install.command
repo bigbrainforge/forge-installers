@@ -198,4 +198,4 @@ read -r _ || true
 
 exit "$installer_exit"
 
-# forge release: forge-v2.44.0
+# forge release: forge-v2.45.1
