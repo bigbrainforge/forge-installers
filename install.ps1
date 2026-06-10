@@ -133,7 +133,7 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
-$ScriptVersion = '0.3.0'
+$ScriptVersion = '0.3.1'
 # Exact patch pin — same version on dev box, CI, and clients. Eliminates the
 # "works locally, fails on CI" class of drift caused by major-only pins
 # picking different patches. Bump in lockstep with .nvmrc and CI workflows.
@@ -180,6 +180,13 @@ if (-not $NonInteractive) {
         Write-Host '  required value, re-run in a real terminal OR pass that value as a' -ForegroundColor Cyan
         Write-Host '  parameter (see Get-Help .\install.ps1 -Full).' -ForegroundColor Cyan
     }
+}
+
+# -ForceTokens exists to PROMPT for replacement values; without a terminal the
+# hidden Read-Host would read empty and Die confusingly at Step 3. Fail loud
+# and early instead.
+if ($ForceTokens -and $NonInteractive) {
+    Die '-ForceTokens needs an interactive terminal — it must prompt for replacement token values. Re-run from a real PowerShell window (not an agent shell or CI).'
 }
 
 # ── Prompt helpers ──────────────────────────────────────────────────────────
@@ -362,9 +369,15 @@ public static class CredmanV2 {
 # credential if it already exists.
 
 function Install-TokenInCredman([string]$VarName, [string]$Label) {
-    $existing = [CredmanV2]::Read($VarName)
+    # -ForceTokens must reach THIS reuse check, not just the backend-selection
+    # gate in Step 2 — otherwise "force fresh token prompts" silently reuses
+    # the stale stored value it exists to replace (field-reported: a 401ing
+    # workstation re-ran with -ForceTokens and was never prompted).
+    # CredWrite overwrites an existing entry with the same TargetName, so the
+    # prompt path below doubles as the replace path.
+    $existing = if ($ForceTokens) { $null } else { [CredmanV2]::Read($VarName) }
     if ($existing) {
-        Write-InfoMsg "$VarName already in Credential Manager — reusing"
+        Write-InfoMsg "$VarName already in Credential Manager — reusing (pass -ForceTokens to replace)"
     } else {
         Write-InfoMsg "paste $Label (input hidden; will be stored in Credential Manager):"
         $secure = Read-Host -AsSecureString "  $VarName"
@@ -381,8 +394,8 @@ function Install-TokenInCredman([string]$VarName, [string]$Label) {
 }
 
 function Install-TokenInGcp([string]$VarName, [string]$GcpSecret) {
-    $line = "`$env:$VarName = (& gcloud secrets versions access latest --secret=$GcpSecret --project=$GcpProject 2>`$null)"
-    Add-ProfileLine $line
+    $envLine = "`$env:$VarName = (& gcloud secrets versions access latest --secret=$GcpSecret --project=$GcpProject 2>`$null)"
+    Add-ProfileLine $envLine
     Set-Item -Path "Env:$VarName" -Value (& gcloud secrets versions access latest --secret=$GcpSecret --project=$GcpProject)
 }
 
@@ -442,8 +455,8 @@ function Install-OpCli {
 
 function Install-TokenInOnePassword([string]$VarName, [string]$ItemName) {
     $ref = "op://$OpVault/$ItemName/$OpField"
-    $line = "`$env:$VarName = (& op read `"$ref`" 2>`$null)"
-    Add-ProfileLine $line
+    $envLine = "`$env:$VarName = (& op read `"$ref`" 2>`$null)"
+    Add-ProfileLine $envLine
     Set-Item -Path "Env:$VarName" -Value (& op read $ref 2>$null)
 }
 
@@ -469,16 +482,16 @@ function Clear-StaleKeystoreEntries {
         'CODEX_INGEST_TOKEN',
         'FORGE_INGEST_TOKEN'
     )
-    foreach ($name in $sweepNames) {
+    foreach ($entryName in $sweepNames) {
         try {
-            $existing = [CredmanV2]::Read($name)
+            $existing = [CredmanV2]::Read($entryName)
             if ($existing) {
-                & cmdkey /delete:$name *>$null
-                $stillThere = [CredmanV2]::Read($name)
+                & cmdkey /delete:$entryName *>$null
+                $stillThere = [CredmanV2]::Read($entryName)
                 if ($stillThere) {
-                    Write-WarnMsg "cmdkey /delete:$name reported success but entry persists — inspect Credential Manager manually"
+                    Write-WarnMsg "cmdkey /delete:$entryName reported success but entry persists — inspect Credential Manager manually"
                 } else {
-                    Write-InfoMsg "swept stale Credential Manager entry: $name"
+                    Write-InfoMsg "swept stale Credential Manager entry: $entryName"
                 }
             }
         } catch { }
@@ -544,12 +557,19 @@ if ($existingNode -eq "v$NodeVersion") {
     # `C:\nvm4w\nodejs` until the next shell. Cheap and idempotent.
     $env:Path = [System.Environment]::GetEnvironmentVariable('Path', 'Machine') + ';' + [System.Environment]::GetEnvironmentVariable('Path', 'User')
 
-    $nodeVersion = Get-NodeVersionSafe
-    if (-not $nodeVersion) {
+    # NOTE: PowerShell variable names are case-INsensitive. This local must
+    # not reuse the pin's name in lowercase — that is the SAME variable as
+    # the script-level $NodeVersion pin, and assigning "v24.15.0" here
+    # clobbered the pin, making the comparison below "v24.15.0" -ne
+    # "vv24.15.0" → a guaranteed Die on every fresh machine that took the
+    # nvm slow path. Pinned by the installer-ps1-case-insensitive-vars
+    # sentinel (forge-plugin test suite).
+    $activeNode = Get-NodeVersionSafe
+    if (-not $activeNode) {
         Die 'node not on PATH after nvm use + PATH refresh. Close this PowerShell, open a fresh one, and re-run the installer.'
     }
-    if ($nodeVersion -ne "v$NodeVersion") { Die "expected Node v$NodeVersion exactly, got $nodeVersion" }
-    Write-Ok "Node $nodeVersion active (exact pin)"
+    if ($activeNode -ne "v$NodeVersion") { Die "expected Node v$NodeVersion exactly, got $activeNode" }
+    Write-Ok "Node $activeNode active (exact pin)"
 }
 
 # ── Step 2: choose secrets backend ───────────────────────────────────────────
@@ -724,27 +744,27 @@ else {
             # fool any depth-counting approach.
             $newLines = @()
             $state = 'normal'
-            foreach ($line in $profileLines) {
+            foreach ($profileLine in $profileLines) {
                 if ($state -eq 'normal') {
-                    if ($line -match '^#\s*forge credman helper\s*$') {
+                    if ($profileLine -match '^#\s*forge credman helper\s*$') {
                         # Enter legacy helper block — skip lines until the
                         # here-string terminator.
                         $state = 'inBlock'
                     }
-                    elseif ($line -match '\[Credman\]::Read\(') {
+                    elseif ($profileLine -match '\[Credman\]::Read\(') {
                         # Drop stale per-var line referencing the v1
                         # `Credman` type. New v2 lines use `CredmanV2`
                         # (written below) and stay.
                     }
                     else {
-                        $newLines += $line
+                        $newLines += $profileLine
                     }
                 }
                 elseif ($state -eq 'inBlock') {
                     # Here-string terminator `"@ ...` marks the tail of
                     # the legacy block; the next line is the outer `}`
                     # closing the if-guard.
-                    if ($line -match '^"@') { $state = 'afterHereString' }
+                    if ($profileLine -match '^"@') { $state = 'afterHereString' }
                 }
                 elseif ($state -eq 'afterHereString') {
                     # Swallow exactly one more line (the outer `}`) then
@@ -1156,4 +1176,4 @@ Write-Host ''
 Write-Host '  Troubleshooting: see client-install.md, or re-run this installer —'
 Write-Host '  it is idempotent.'
 
-# forge release: forge-v2.45.1
+# forge release: forge-v2.45.2

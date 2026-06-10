@@ -173,6 +173,13 @@ if [ "$NON_INTERACTIVE" = "false" ]; then
   fi
 fi
 
+# --force-tokens exists to PROMPT for replacement values; without a TTY the
+# no-echo read would come back empty and die confusingly at step 3. Fail loud
+# and early instead.
+if [ "$FORCE_TOKENS" = "true" ] && [ "$NON_INTERACTIVE" = "true" ]; then
+  die "--force-tokens needs an interactive terminal — it must prompt for replacement token values. Re-run from a real terminal (not an agent shell or CI)."
+fi
+
 # ── Validate OP_* inputs (shell-injection guard) ─────────────────────────────
 #
 # The four --op-* values are interpolated into a literal `op read "op://..."`
@@ -311,7 +318,12 @@ append_if_missing() {
 #       $2 = human-readable label for prompts
 #
 # Behavior:
-#   - If the env var is already populated in the current shell, skip prompt.
+#   - Under --force-tokens, ALWAYS prompt — both reuse shortcuts below are
+#     skipped so a stale stored value (e.g. 401 from the MCP endpoint) can
+#     actually be replaced. The flag must reach THIS function, not just the
+#     backend-selection gate (field-reported regression: a 401ing
+#     workstation re-ran with --force-tokens and was never prompted).
+#   - Else if the env var is already populated in the current shell, skip prompt.
 #   - Else if the keystore already has the entry, reuse it silently.
 #   - Else prompt (no-echo), store, and emit profile line.
 #
@@ -319,15 +331,19 @@ append_if_missing() {
 store_token_in_keystore() {
   local var_name=$1 label=${2:-$1}
   local val
-  val=$(printenv "$var_name" || true)
-  if [ -n "$val" ]; then
-    info "${var_name} already set in environment — skipping prompt"
-    return 0
+  if [ "$FORCE_TOKENS" = "false" ]; then
+    val=$(printenv "$var_name" || true)
+    if [ -n "$val" ]; then
+      info "${var_name} already set in environment — skipping prompt"
+      return 0
+    fi
   fi
 
   if have security; then
-    if security find-generic-password -s "$var_name" -a "$USER" -w >/dev/null 2>&1; then
-      info "${var_name} already in Keychain — reusing"
+    # `add-generic-password -U` updates an existing entry in place, so the
+    # prompt path doubles as the replace path under --force-tokens.
+    if [ "$FORCE_TOKENS" = "false" ] && security find-generic-password -s "$var_name" -a "$USER" -w >/dev/null 2>&1; then
+      info "${var_name} already in Keychain — reusing (pass --force-tokens to replace)"
     else
       info "paste ${label} (input hidden; will be stored in Keychain):"
       printf "  %s: " "$var_name"
@@ -344,13 +360,15 @@ store_token_in_keystore() {
     append_if_missing "$line" "$PROFILE"
     export "${var_name}"="$(security find-generic-password -s "$var_name" -a "$USER" -w)"
   elif have secret-tool; then
-    # Linux libsecret path
-    if ! secret-tool lookup service "$var_name" >/dev/null 2>&1; then
+    # Linux libsecret path. `secret-tool store` replaces an entry with the
+    # same attributes, so the prompt path doubles as the replace path under
+    # --force-tokens.
+    if [ "$FORCE_TOKENS" = "false" ] && secret-tool lookup service "$var_name" >/dev/null 2>&1; then
+      info "${var_name} already in libsecret — reusing (pass --force-tokens to replace)"
+    else
       info "paste ${label} (input hidden):"
       secret-tool store --label="${label}" service "$var_name"
       ok "stored in libsecret keyring"
-    else
-      info "${var_name} already in libsecret — reusing"
     fi
     local line="export ${var_name}=\"\$(secret-tool lookup service ${var_name} 2>/dev/null)\""
     append_if_missing "$line" "$PROFILE"
@@ -906,4 +924,4 @@ $(printf '\033[1;32m✓ Forge plugin installed successfully.\033[0m')
   idempotent.
 EOF
 
-# forge release: forge-v2.45.1
+# forge release: forge-v2.45.2
