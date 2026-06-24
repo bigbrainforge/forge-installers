@@ -5,7 +5,9 @@
 **Runtime:** Node 24 LTS (installer sets this up for you)
 **Requires:** Claude Code already installed ([claude.ai/code](https://claude.ai/code))
 
-> **Runtime change — Node 22 → Node 24.** Forge advanced its primary runtime from Node 22.22.2 to Node 24.15.0 (Krypton LTS) in the release that ships with this doc. The installer handles the Node bump for you (installs Node 24.15.0 via nvm / nvm-windows; the previous Node 22 install is left in place). Sealed bundles in this release ship for Node 24 only — `npm install -g @bigbrainforge/forge-plugin` running under Node 22 will install but the runtime contract is Node 24; re-run `install.sh` / `install.ps1` to align. The matrix can be expanded back to `[22, 24]` (see [`release.yml`](https://github.com/bigbrainforge/forge/blob/main/.github/workflows/release.yml) seal job) by Forge maintainers if a client genuinely needs Node 22 backwards-compat — file the request via the [Forge issue tracker](https://thebanffpractice.atlassian.net/browse/BBF). Semver: this is a minor/major release per the runtime bump.
+> **Native marketplace install.** The Forge plugin installs through Claude Code's built-in plugin marketplace — not via `npm install -g`. The `install.sh` / `install.ps1` scripts set up prerequisites (Node, tokens, `~/.npmrc`) **and** then install the plugin for you by running the `claude plugin` CLI (`claude plugin marketplace add bigbrainforge/forge-installers` followed by `claude plugin install forge@forge`). Nothing is copied into `~/.claude/` by the installer, and there is no `forge-plugin` bin. After the installer finishes you only load the two tokens and restart Claude Code. See [Quick install](#2-quick-install-recommended).
+
+> **Runtime — Node 24 minimum.** Forge requires Node 24.15.0 (Krypton LTS) or newer. The installer checks your running Node and only installs Node 24.15.0 via nvm / nvm-windows when Node is missing or below that minimum; if your Node already satisfies the floor it is left untouched. The minimum can be revisited by Forge maintainers — contact your BigBrain representative if you need a different runtime.
 
 The Forge plugin is a Claude Code plugin — it adds slash commands (`/forge:goal`, `/forge:review`, `/forge:done`, `/forge:status`, etc.), a statusline hook, and registers the Forge MCP server in your Claude Code config. All orchestration runs server-side on the Forge MCP endpoint; the plugin itself is pure configuration and does not run atlas indexing locally.
 
@@ -16,8 +18,8 @@ The Forge plugin is a Claude Code plugin — it adds slash commands (`/forge:goa
 1. [What you'll receive from BigBrain](#1-what-youll-receive-from-bigbrain)
 2. [Quick install (recommended)](#2-quick-install-recommended)
 3. [Secrets backends: OS keystore vs GCP Secret Manager vs 1Password](#3-secrets-backends-os-keystore-vs-gcp-secret-manager-vs-1password)
-4. [After install — verify the plugin](#4-after-install--verify-the-plugin)
-5. [Manual install (fallback / reference)](#5-manual-install-fallback--reference)
+4. [After install — load tokens, restart, verify](#4-after-install--load-tokens-restart-verify)
+5. [Manual setup (fallback / reference)](#5-manual-setup-fallback--reference)
 6. [Troubleshooting](#6-troubleshooting)
 7. [Updating](#7-updating)
 8. [Quick reference](#8-quick-reference)
@@ -31,7 +33,7 @@ Before you start, a BigBrain representative will send you — out-of-band via an
 
 | Item | Purpose |
 |---|---|
-| `FORGE_PACKAGE_TOKEN` | Read access to the `@bigbrainforge` GitHub Packages registry (`read:packages` scope). Used by `npm install` only. |
+| `FORGE_PACKAGE_TOKEN` | Read access to the `@bigbrainforge` GitHub Packages registry (`read:packages` scope). Claude Code uses it (via the `~/.npmrc` reference) to pull the plugin package when the installer runs `claude plugin install forge@forge`. |
 | `FORGE_ACCESS_TOKEN` | Bearer token for your Forge MCP endpoint. Used by the plugin's slash commands at runtime. |
 | Forge MCP endpoint URL | e.g. `https://forge-mcp.bigbrainforge.com` (already wired into the plugin's default config) |
 | Your repo/project identifier | Used when starting a Forge goal (`/forge:goal` will prompt) |
@@ -49,7 +51,20 @@ If your organisation uses **1Password (Business or Teams)**, BigBrain will work 
 
 ## 2. Quick install (recommended)
 
-The installer handles everything: Node 24 via nvm, registry config, secret storage, plugin install, shell profile wiring, and verification. It **prompts** for the choices it needs — no flags required for normal use. Re-running is safe.
+Installation is one command, then a restart:
+
+1. **Run the installer** (`install.sh` / `install.ps1`). It sets up prerequisites — Node 24 (only if yours is too old), registry config, secret storage, and shell-profile wiring — **and then installs the plugin for you** by running Claude Code's `claude plugin` CLI:
+
+   ```text
+   claude plugin marketplace add bigbrainforge/forge-installers
+   claude plugin install forge@forge
+   ```
+
+   `claude plugin install` pulls `@bigbrainforge/forge-plugin` from the private registry using the `FORGE_PACKAGE_TOKEN` the installer put in the environment (plus the `~/.npmrc` reference it wrote). Claude Code's plugin system owns the install — nothing is copied into `~/.claude/`. The installer **prompts** for the choices it needs — no flags required for normal use. Re-running is safe.
+
+2. **Load the two tokens and restart Claude Code.** After the installer exits, open a new shell (or re-source your profile) so `FORGE_PACKAGE_TOKEN` and `FORGE_ACCESS_TOKEN` are set, then (re)launch Claude Code from that shell. See [Section 4](#4-after-install--load-tokens-restart-verify).
+
+If the `claude` CLI isn't on PATH when the installer runs (Claude Code not yet installed), the plugin-install step is skipped with a warning that prints the two `claude plugin` commands to run yourself afterward.
 
 Both installer scripts are served from `bigbrainforge/forge-installers` (public repo, no auth required to download), so `curl` / `Invoke-WebRequest` work before you've configured any tokens.
 
@@ -97,7 +112,7 @@ If PowerShell blocks the script (execution policy), run once:
 Set-ExecutionPolicy -Scope CurrentUser -ExecutionPolicy RemoteSigned
 ```
 
-After the installer completes, you MUST either **open a new terminal** or **re-source your shell profile** (the installer prints the exact command). Existing shells don't have `FORGE_PACKAGE_TOKEN` or `FORGE_ACCESS_TOKEN` set — they only populate in shells started after the installer wrote to your profile. Then **restart Claude Code from that new shell** so the slash commands, statusline, and env vars all load together, and skip to [Section 4](#4-after-install--verify-the-plugin).
+After the installer completes, you MUST either **open a new terminal** or **re-source your shell profile** (the installer prints the exact command). Existing shells don't have `FORGE_PACKAGE_TOKEN` or `FORGE_ACCESS_TOKEN` set — they only populate in shells started after the installer wrote to your profile. Then **launch Claude Code from that new shell** so it inherits the env vars. The installer already installed the plugin via the `claude plugin` CLI; go to [Section 4](#4-after-install--load-tokens-restart-verify) to load tokens, restart, and verify.
 
 ### Scripted / CI installs (skip the prompts)
 
@@ -248,9 +263,9 @@ op item edit FORGE_ACCESS_TOKEN credential='<new-token>' --vault='Platform - AI 
 
 ---
 
-## 4. After install — verify the plugin
+## 4. After install — load tokens, restart, verify
 
-The installer's final step runs `forge-plugin` (the bin from the installed package), which copies slash commands and the statusline hook into `~/.claude/` and registers the Forge MCP server with Claude Code.
+The installer already installed the plugin for you — it ran `claude plugin marketplace add bigbrainforge/forge-installers` and `claude plugin install forge@forge` as its last step. You do **not** type any `/plugin` commands. All that's left is to load the two tokens into your environment, restart Claude Code so it picks them up, and verify.
 
 After the installer exits:
 
@@ -278,24 +293,10 @@ After the installer exits:
    "pkg=$($env:FORGE_PACKAGE_TOKEN.Length) access=$($env:FORGE_ACCESS_TOKEN.Length)"
    ```
 
-2. **Restart Claude Code from that shell.** Close the existing Claude Code app/CLI completely and relaunch it from the shell where the env vars are set — Claude Code inherits its environment from the process that spawned it, so launching from a stale shell will leave the plugin unable to authenticate to the MCP server.
+2. **Launch Claude Code from that shell.** Close the existing Claude Code app/CLI completely and relaunch it from the shell where the env vars are set — Claude Code inherits its environment from the process that spawned it, so launching from a stale shell will leave the plugin unable to authenticate to the MCP server. The restart also loads the plugin the installer installed (slash commands, statusline, and MCP registration).
 
-3. **Verify the plugin files landed:**
-
-   ```bash
-   # macOS/Linux
-   ls ~/.claude/commands/forge/          # should list new.md, help.md, status.md, ...
-   cat ~/.claude/forge/VERSION           # installed version
-   ```
-
-   ```powershell
-   # Windows
-   Get-ChildItem $HOME\.claude\commands\forge
-   Get-Content   $HOME\.claude\forge\VERSION
-   ```
-
-4. **In Claude Code**, type `/forge:help` — you should see the command list.
-5. **Start your first goal** with `/forge:goal "<your-objective>"`.
+3. **Verify the plugin is active.** In Claude Code, type `/forge:help` — you should see the command list. You can also confirm the plugin shows as installed with `claude plugin list` (or under the in-app `/plugin` view), which should list `forge@forge`.
+4. **Start your first goal** with `/forge:goal "<your-objective>"`.
 
    The canonical Forge flow is **`/forge:goal → /forge:review → /forge:done`**:
    - `/forge:goal` — set a verifiable objective; Claude iterates until success criteria are met.
@@ -373,11 +374,13 @@ When Forge ships a newer template (a new event source, hardened guard, env-var t
 
 ---
 
-## 5. Manual install (fallback / reference)
+## 5. Manual setup (fallback / reference)
 
-Use this path only if the installer fails and you need to debug, or if your environment has restrictions that prevent the installer from running.
+Use this path only if the installer fails and you need to debug, or if your environment has restrictions that prevent the installer from running. This is the by-hand equivalent of what the installer does: set up the prerequisites yourself (§5.1–§5.4), then install the plugin with the two `claude plugin` CLI commands in §5.5 — the same commands the installer runs.
 
-### 5.1 Install Node 24 LTS
+### 5.1 Install Node 24 LTS (only if your Node is older)
+
+Forge requires Node 24.15.0 or newer. If your existing Node already meets that floor, skip this step.
 
 **macOS / Linux:**
 ```bash
@@ -388,7 +391,7 @@ nvm install 24 && nvm use 24 && nvm alias default 24
 
 **Windows:**
 1. Install nvm-windows from https://github.com/coreybutler/nvm-windows/releases
-2. Open new PowerShell: `nvm install 22; nvm use 22`
+2. Open new PowerShell: `nvm install 24; nvm use 24`
 
 ### 5.2 Store the FORGE_PACKAGE_TOKEN
 
@@ -448,13 +451,7 @@ Append these three lines to `~/.npmrc` (path is `%USERPROFILE%\.npmrc` on Window
 always-auth=true
 ```
 
-### 5.4 Install the plugin package
-
-```bash
-npm install -g @bigbrainforge/forge-plugin
-```
-
-### 5.5 Store FORGE_ACCESS_TOKEN
+### 5.4 Store FORGE_ACCESS_TOKEN
 
 Same pattern as §5.2 but with `FORGE_ACCESS_TOKEN` as the env-var name and secret key. Example (macOS Keychain):
 
@@ -484,28 +481,28 @@ export FORGE_ACCESS_TOKEN="$(op read 'op://Platform - AI - FORGE/FORGE_ACCESS_TO
 $env:FORGE_ACCESS_TOKEN = (& op read 'op://Platform - AI - FORGE/FORGE_ACCESS_TOKEN/credential' 2>$null)
 ```
 
-### 5.6 Run the plugin installer
+### 5.5 Install the plugin via the marketplace
+
+Open a new shell (so the profile lines above load both tokens), then run the two `claude plugin` CLI commands the installer would have run for you:
 
 ```bash
-forge-plugin
+claude plugin marketplace add bigbrainforge/forge-installers
+claude plugin install forge@forge
 ```
 
-This copies slash commands and the statusline hook into `~/.claude/` and registers the Forge MCP server. Restart Claude Code afterward.
+`claude plugin install` pulls `@bigbrainforge/forge-plugin` from the private registry using the `FORGE_PACKAGE_TOKEN` your `~/.npmrc` reference resolves, then installs the slash commands, statusline hook, and MCP registration natively. (The in-app `/plugin marketplace add` / `/plugin install forge@forge` slash commands are the GUI equivalent if you prefer to run them from inside Claude Code.) Launch Claude Code from the same shell so it loads the plugin and inherits the env vars.
 
-### 5.7 Verify
+### 5.6 Verify
 
-```bash
-ls ~/.claude/commands/forge/
-cat ~/.claude/forge/VERSION
-```
+In Claude Code, run `/forge:help` — you should see the command list. You can also confirm the plugin shows as installed with `claude plugin list` (or under the in-app `/plugin` view).
 
 ---
 
 ## 6. Troubleshooting
 
-### `npm install` fails with `401 Unauthorized`
+### `claude plugin install` fails with `401 Unauthorized`
 
-Your `FORGE_PACKAGE_TOKEN` isn't reaching npm. Check:
+Your `FORGE_PACKAGE_TOKEN` isn't reaching the registry when the plugin package is pulled (during the installer's plugin-install step, or when you run `claude plugin install forge@forge` yourself). Check:
 
 ```bash
 # macOS/Linux
@@ -515,7 +512,7 @@ echo "length=${#FORGE_PACKAGE_TOKEN}"
 "length=$($env:FORGE_PACKAGE_TOKEN.Length)"
 ```
 
-If zero-length, re-run the installer or re-source your profile (`source ~/.zshrc` / `. $PROFILE`). If still zero, verify the secret store contents:
+If zero-length, re-run the installer (it'll re-attempt the plugin install) or re-source your profile (`source ~/.zshrc` / `. $PROFILE`) and re-run `claude plugin install forge@forge` yourself. If still zero, verify the secret store contents:
 
 ```bash
 # macOS Keychain
@@ -530,9 +527,9 @@ gcloud secrets versions access latest --secret=FORGE_PACKAGE_TOKEN --project=YOU
 
 ### Slash commands don't appear in Claude Code
 
-- Confirm `ls ~/.claude/commands/forge/` shows `.md` files.
-- Confirm you've fully restarted Claude Code (close all windows/processes).
-- Run `forge-plugin` again — it's idempotent and will re-copy any missing files.
+- Confirm the plugin shows as installed via `claude plugin list` or under the in-app `/plugin` view (it should list `forge@forge`). If it doesn't, run `claude plugin install forge@forge` (or re-run the installer).
+- Confirm you've fully restarted Claude Code (close all windows/processes) after the install — the plugin's commands and hooks load at startup.
+- If the install failed, check the `401 Unauthorized` item above (FORGE_PACKAGE_TOKEN not reaching the registry).
 
 ### MCP server errors inside Claude Code
 
@@ -549,11 +546,7 @@ If zero, re-source your profile and relaunch Claude Code from that shell. Claude
 
 ### Statusline not showing
 
-Check `~/.claude/settings.json` — it should have a `statusLine` entry pointing at `~/.claude/hooks/forge-statusline.js`. If another tool owns the statusline and you want Forge's to replace it, re-run:
-
-```bash
-forge-plugin --force-statusline
-```
+The plugin's statusline is managed by Claude Code's plugin system. Confirm the plugin is installed and active under `/plugin`, then fully restart Claude Code. If another tool owns the statusline, disabling that tool's statusline (or its plugin) lets Forge's take over on the next restart.
 
 ### PowerShell execution policy blocks the installer
 
@@ -573,47 +566,15 @@ gcloud secrets describe FORGE_PACKAGE_TOKEN --project=YOUR-PROJECT
 
 Common causes: expired `gcloud auth login` session (re-run it), wrong project, missing `roles/secretmanager.secretAccessor` IAM binding on your user.
 
-### Version mismatch after `/forge:setup update` — upgrade from < 0.6.0
+### Rotating bad / expired tokens
 
-**Symptom.** After upgrading from a pre-0.6.0 install, `cat ~/.claude/forge/VERSION` shows an old version (e.g. `0.5.19`) even though `npm list -g @bigbrainforge/forge-plugin` shows the new one. `/forge:setup update` reports "already at latest" even when you're clearly not.
-
-**Cause.** Bin-shim collision between the deprecated unscoped `forge-plugin` package (on npmjs.com, frozen since PR #230) and the current scoped `@bigbrainforge/forge-plugin` (on GH Packages). Both register a `forge-plugin` bin shim; whichever was installed last wins the PATH lookup. Pre-0.6.0 clients that had both packages installed would hit this on every update because the pre-0.6.0 `/forge:setup update` procedure didn't sweep the deprecated shim before `npm install`.
-
-**Fix — re-run the installer.** From 0.6.2 onward the installer is fully self-healing. It auto-detects your existing tokens in the keystore, skips every prompt, does the aggressive sweep, reinstalls the scoped package, clears stale command markdown, and re-runs the postinstaller. One paste, zero prompts:
-
-```powershell
-# Windows (PowerShell 7+) — always fetch fresh installer, never a stale local copy
-Remove-Item .\install.ps1 -Force -ErrorAction SilentlyContinue
-Invoke-WebRequest -Uri https://raw.githubusercontent.com/bigbrainforge/forge-installers/main/install.ps1 -OutFile install.ps1 -UseBasicParsing
-.\install.ps1
-```
-
-```bash
-# macOS / Linux — always fetch fresh installer, never a stale local copy
-rm -f install.sh
-curl -fsSL https://raw.githubusercontent.com/bigbrainforge/forge-installers/main/install.sh -o install.sh
-chmod +x install.sh
-./install.sh
-```
-
-The `Remove-Item` / `rm -f` first line is important: without it, a prior run's local `install.ps1` / `install.sh` can linger even though `Invoke-WebRequest` / `curl` should overwrite — observed in the field when cached / read-only file attributes prevent the overwrite silently. Always fetch fresh.
-
-The installer will print a **HEAL mode** banner when it auto-detects existing tokens and runs silently from there.
-
-**Verify.** After the installer finishes: `cat ~/.claude/forge/VERSION` must match `npm list -g @bigbrainforge/forge-plugin`. Restart Claude Code so the 0.6.0+ SessionStart + Stop hooks load — from there on, auto-update handles every subsequent release without manual intervention.
-
-**To rotate tokens** (bad / expired): pass `-ForceTokens` (Windows) or `--force-tokens` (macOS/Linux) to force fresh prompts.
+To replace stored tokens (e.g. a `401` from a rotated `FORGE_PACKAGE_TOKEN`), re-run the installer with the force flag so it re-prompts instead of silently reusing the stale value: `-ForceTokens` (Windows) or `--force-tokens` (macOS/Linux). Then relaunch Claude Code from a fresh shell.
 
 ---
 
 ## 7. Updating
 
-```bash
-npm install -g @bigbrainforge/forge-plugin@latest
-forge-plugin
-```
-
-Restart Claude Code afterward.
+Plugin updates are handled by Claude Code's native marketplace — there is no `npm install -g` step. To pick up a newer plugin release, run `claude plugin update forge` (or, from inside Claude Code, refresh the `bigbrainforge/forge-installers` marketplace and update `forge@forge` via `/plugin`), and restart Claude Code when prompted. Token rotation is unchanged from the prerequisite setup, covered below.
 
 Under GCP-secrets mode, rotating either token is a one-liner:
 
@@ -710,11 +671,13 @@ This is a real network probe (not a local lookup) — it POSTs to `/api/atlas/in
 | Run installer (Windows, keystore) | `.\install.ps1` |
 | Run installer (Windows, GCP) | `.\install.ps1 -Secrets gcp -GcpProject P` |
 | Run installer (Windows, 1Password) | `.\install.ps1 -Secrets onepassword -OpVault 'Platform - AI - FORGE'` |
-| Re-run plugin file copy | `forge-plugin` |
-| Update | `npm install -g @bigbrainforge/forge-plugin@latest && forge-plugin` |
-| Recover from bin-shim collision (pre-0.6.0 upgrades) | `forge-plugin --cleanup` then reinstall |
-| Uninstall | `forge-plugin --uninstall` |
-| Verify install | `ls ~/.claude/commands/forge/` + `cat ~/.claude/forge/VERSION` |
+| Rotate stored tokens | `./install.sh --force-tokens` / `.\install.ps1 -ForceTokens` |
+| Add the Forge marketplace (the installer runs this) | `claude plugin marketplace add bigbrainforge/forge-installers` |
+| Install the plugin (the installer runs this) | `claude plugin install forge@forge` |
+| Update the plugin | `claude plugin update forge` |
+| Uninstall the plugin | `claude plugin uninstall forge` |
+| List installed plugins | `claude plugin list` |
+| Verify install (in Claude Code) | `/forge:help` (or `claude plugin list`) |
 | In Claude Code | `/forge:help`, `/forge:goal`, `/forge:review`, `/forge:done`, `/forge:status`, `/forge:save`, `/forge:resume` |
 
 ---
@@ -746,8 +709,8 @@ The 1Password backend reduces engineer onboarding to "add to vault → run insta
    .\install.ps1 -Secrets onepassword
    ```
 
-   That's the entire flow. The installer verifies `op whoami` succeeds, confirms both vault items resolve to non-empty values, writes the `op read` profile lines, sweeps any stale OS-keystore entries, and exits.
-5. Open a new shell so the profile lines load, then [verify the plugin](#4-after-install--verify-the-plugin).
+   That's the entire prerequisite flow. The installer verifies `op whoami` succeeds, confirms both vault items resolve to non-empty values, writes the `op read` profile lines, sweeps any stale OS-keystore entries, and exits.
+5. Open a new shell so the profile lines load, then launch Claude Code. The installer already installed the plugin via the `claude plugin` CLI — see [Section 4](#4-after-install--load-tokens-restart-verify) to verify.
 
 ### Permissions note
 
@@ -761,4 +724,4 @@ The 1Password backend reduces engineer onboarding to "add to vault → run insta
 - **Plugin / slash-command issues:** include the full command + output.
 - **Security concerns:** email security@bigbrainforge.com — do not file as public GitHub issues.
 
-<!-- forge release: forge-v2.45.7 -->
+<!-- forge release: forge-v3.0.0 -->

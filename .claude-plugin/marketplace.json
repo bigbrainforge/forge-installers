@@ -1,0 +1,23 @@
+{
+  "name": "forge",
+  "owner": {
+    "name": "Big Brain Forge",
+    "url": "https://github.com/bigbrainforge"
+  },
+  "metadata": {
+    "description": "Forge for Claude Code — agentic orchestration for high-compliance environments."
+  },
+  "plugins": [
+    {
+      "name": "forge",
+      "source": {
+        "source": "npm",
+        "package": "@bigbrainforge/forge-plugin",
+        "registry": "https://npm.pkg.github.com"
+      },
+      "description": "Forge slash commands, skills, hooks, MCP integration, and statusline. Installs the private @bigbrainforge/forge-plugin package; requires FORGE_PACKAGE_TOKEN in your npm registry auth.",
+      "category": "developer-tools",
+      "keywords": ["forge", "orchestration", "claude-code", "compliance", "agentic"]
+    }
+  ]
+}

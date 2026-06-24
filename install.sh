@@ -1,19 +1,22 @@
 #!/usr/bin/env bash
-# @bigbrainforge/forge-plugin — macOS / Linux installer.
+# @bigbrainforge/forge-plugin — macOS / Linux prerequisite installer.
 #
-# One-command client install for the Claude Code plugin. Handles:
-#   - nvm install (if missing) + Node 24 LTS
+# Sets up everything the Forge plugin needs, then hands off to Claude Code's
+# marketplace to install the plugin itself. Handles:
+#   - Node: install via nvm only if the client's Node is missing or below the
+#     repo minimum (otherwise their existing Node is left untouched)
 #   - FORGE_PACKAGE_TOKEN storage (OS Keychain, GCP Secret Manager, or 1Password)
-#   - ~/.npmrc registry + auth config
-#   - npm install -g @bigbrainforge/forge-plugin
+#   - ~/.npmrc registry + auth reference (the token stays in the env, never on disk)
 #   - FORGE_ACCESS_TOKEN storage (same secrets backend)
 #   - Shell profile wiring
-#   - forge-plugin run (copies slash commands + statusline into ~/.claude/)
-#   - Plugin-file verification
+#   - claude plugin marketplace add + claude plugin install forge@forge
 #
-# The plugin is a standalone artifact — it runs against the deployed Forge
-# MCP server and does not require the `forge` CLI, atlas, or shield to be
-# installed locally. Claude Code must already be installed.
+# The plugin installs natively via Claude Code's CLI — this script runs
+# `claude plugin marketplace add bigbrainforge/forge-installers` then
+# `claude plugin install forge@forge`. Claude Code pulls the package from the
+# private registry using the FORGE_PACKAGE_TOKEN this script put in your
+# environment. Nothing is copied into ~/.claude/ by this script, and no `forge`
+# CLI is installed locally. Claude Code must already be installed.
 #
 # Usage:
 #   ./install.sh                                 # interactive, OS keystore
@@ -30,16 +33,12 @@
 
 set -euo pipefail
 
-SCRIPT_VERSION="0.3.0"
-# Exact patch pin — same version on dev box, CI, and clients. Eliminates the
-# "works locally, fails on CI" class of drift caused by major-only pins
-# picking different patches. Bump in lockstep with .nvmrc and CI workflows.
+SCRIPT_VERSION="0.4.0"
+# Minimum Node the plugin + Forge tooling require, AND the version installed via
+# nvm when the client's Node is missing or too old. Mirrors the repo's .nvmrc
+# floor; a test in the forge-dist suite fails if the two ever drift apart. We do
+# not force an exact version on clients — any Node >= this is left in place.
 NODE_VERSION="24.15.0"
-PACKAGE_NAME="@bigbrainforge/forge-plugin"
-# Sealed `forge` CLI — installed directly on first install (Step 5.5) so the
-# bundled prebuilt tree-sitter native bindings reach clients without a local
-# compile. Distinct from the plugin above; always installed with --ignore-scripts.
-CLI_PACKAGE_NAME="@bigbrainforge/forge"
 REGISTRY_URL="https://npm.pkg.github.com"
 REGISTRY_HOST="npm.pkg.github.com"
 GCP_PACKAGE_SECRET_DEFAULT="FORGE_PACKAGE_TOKEN"
@@ -61,7 +60,6 @@ OP_VAULT="$OP_VAULT_DEFAULT"
 OP_ACCESS_ITEM="$OP_ACCESS_ITEM_DEFAULT"
 OP_PACKAGE_ITEM="$OP_PACKAGE_ITEM_DEFAULT"
 OP_FIELD="$OP_FIELD_DEFAULT"
-SKIP_VERIFY=false
 NON_INTERACTIVE=false
 FORCE_TOKENS=false
 
@@ -69,8 +67,10 @@ usage() {
   cat <<EOF
 @bigbrainforge/forge-plugin installer (v${SCRIPT_VERSION})
 
-Installs the Forge Claude Code plugin. Assumes Claude Code is already
-installed and that a Forge MCP endpoint has been provisioned for you.
+Installs the prerequisites for the Forge Claude Code plugin (Node, tokens,
+~/.npmrc), then installs the plugin itself via Claude Code's marketplace
+(claude plugin marketplace add + claude plugin install). Assumes Claude Code
+is already installed and that a Forge MCP endpoint has been provisioned for you.
 
 Usage: $0 [options]
 
@@ -97,7 +97,6 @@ Options:
   --op-field=NAME                 1Password field name on each item
                                   (default: ${OP_FIELD_DEFAULT})
   --non-interactive               Never prompt — require all needed flags
-  --skip-verify                   Skip the final plugin-file verification
   --force-tokens                  Force fresh token prompts even if existing
                                   tokens are detected in keystore / GCP /
                                   1Password (for rotation, or when stored
@@ -135,7 +134,6 @@ for arg in "$@"; do
     --op-access-item=*)   OP_ACCESS_ITEM="${arg#*=}";;
     --op-package-item=*)  OP_PACKAGE_ITEM="${arg#*=}";;
     --op-field=*)         OP_FIELD="${arg#*=}";;
-    --skip-verify)        SKIP_VERIFY=true;;
     --non-interactive)    NON_INTERACTIVE=true;;
     --force-tokens)       FORCE_TOKENS=true;;
     -h|--help)            usage; exit 0;;
@@ -480,26 +478,36 @@ clear_stale_keystore_entries() {
   fi
 }
 
-# ── Step 1: Node $NODE_VERSION via nvm ───────────────────────────────────────
+# ── Step 1: Node (>= repo minimum, install only if needed) ───────────────────
 #
-# Fast path: if exactly Node $NODE_VERSION is already active on PATH, skip
-# nvm entirely. Re-runs are non-destructive for healthy installs.
-#
-# Slow path: nvm install $NODE_VERSION — idempotent, won't re-download if
-# already present. Pinning to the exact patch ensures every Forge client
-# runs the same Node binary the sealed bundle was built against (Node ABI
-# 137 for 24.x — tree-sitter natives compile from source on install).
+# We do NOT force an exact version on the client. If their Node already meets
+# the minimum (NODE_VERSION, which mirrors the repo's .nvmrc floor) we leave it
+# untouched. Only when Node is missing or too old do we install NODE_VERSION via
+# nvm. Claude Code runs the plugin's scripts under whatever Node is on PATH, so
+# "new enough" is the only requirement — the marketplace install does the rest.
 
-step "Step 1 — Node ${NODE_VERSION}"
+# version_ge A B → success when semver A >= B (a leading "v" is tolerated).
+version_ge() {
+  local a="${1#v}" b="${2#v}"
+  [ "$a" = "$b" ] && return 0
+  [ "$(printf '%s\n%s\n' "$a" "$b" | sort -V | head -n1)" = "$b" ]
+}
+
+step "Step 1 — Node (>= ${NODE_VERSION})"
 
 existing_node=""
 if have node; then
-  existing_node=$(node --version 2>/dev/null || true)
+  existing_node=$(node --version 2>/dev/null | sed 's/^v//' || true)
 fi
 
-if [ "$existing_node" = "v${NODE_VERSION}" ]; then
-  ok "Node ${existing_node} already active (exact pin match) — skipping nvm"
+if [ -n "$existing_node" ] && version_ge "$existing_node" "$NODE_VERSION"; then
+  ok "Node v${existing_node} already satisfies the minimum (>= ${NODE_VERSION}) — leaving it"
 else
+  if [ -n "$existing_node" ]; then
+    info "Node v${existing_node} is below the required minimum ${NODE_VERSION} — installing via nvm"
+  else
+    info "Node not found — installing ${NODE_VERSION} via nvm"
+  fi
   export NVM_DIR="${NVM_DIR:-$HOME/.nvm}"
 
   if [ ! -s "$NVM_DIR/nvm.sh" ]; then
@@ -550,11 +558,11 @@ else
   if ! have node; then
     die "node not on PATH after nvm use. Open a fresh shell and re-run the installer."
   fi
-  current_node=$(node --version 2>/dev/null || true)
-  if [ "$current_node" != "v${NODE_VERSION}" ]; then
-    die "Node ${current_node} active but pin requires v${NODE_VERSION}. Run: nvm use ${NODE_VERSION}"
+  current_node=$(node --version 2>/dev/null | sed 's/^v//' || true)
+  if ! version_ge "$current_node" "$NODE_VERSION"; then
+    die "Node v${current_node} active but the minimum is ${NODE_VERSION}. Run: nvm use ${NODE_VERSION}"
   fi
-  ok "Node ${current_node} active (exact pin)"
+  ok "Node v${current_node} active (>= ${NODE_VERSION})"
 fi
 
 PROFILE=$(detect_shell_profile)
@@ -566,10 +574,9 @@ append_if_missing '[ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh"' "$PROFILE"
 # Self-heal on re-run: if the user already has FORGE_PACKAGE_TOKEN AND
 # FORGE_ACCESS_TOKEN in the OS keystore (from a prior install), skip the
 # backend prompt and auto-select `keystore`. This makes the installer
-# zero-prompt for repeat runs — a pilot hitting the pre-0.6.0 bin-shim
-# collision can re-run `./install.sh` and the installer heals state
-# (sweeps shims, reinstalls scoped package, nukes stale command markdown,
-# re-runs postinstall) without asking for anything.
+# zero-prompt for repeat runs — re-running `./install.sh` re-applies the
+# prerequisites and re-runs the marketplace install idempotently, without
+# asking for anything.
 #
 # --force-tokens bypasses the detection for rotation / bad-token cases.
 
@@ -723,95 +730,9 @@ append_if_missing "@bigbrainforge:registry=${REGISTRY_URL}" "$NPMRC"
 append_if_missing "//${REGISTRY_HOST}/:_authToken=\${FORGE_PACKAGE_TOKEN}" "$NPMRC"
 append_if_missing "always-auth=true" "$NPMRC"
 
-# ── Step 5: npm install ──────────────────────────────────────────────────────
+# ── Step 5: FORGE_ACCESS_TOKEN ───────────────────────────────────────────────
 
-step "Step 5 — install ${PACKAGE_NAME}"
-
-# Cleanup prior installs that collide on the `forge-plugin` bin name.
-# See the install.ps1 counterpart for the full rationale — same two
-# scenarios (deprecated public forge-plugin@* from pre-PR #230, or a
-# partial install from an earlier crashed run) also hit Unix hosts.
-# Both uninstall calls are idempotent.
-info "Removing any stale forge-plugin shims from prior installs..."
-npm uninstall -g forge-plugin --silent >/dev/null 2>&1 || true
-npm uninstall -g "$PACKAGE_NAME" --silent >/dev/null 2>&1 || true
-
-npm_prefix=$(npm config get prefix 2>/dev/null || echo "")
-if [ -n "$npm_prefix" ]; then
-  for shim in "$npm_prefix/bin/forge-plugin" "$npm_prefix/forge-plugin"; do
-    if [ -e "$shim" ] || [ -L "$shim" ]; then
-      if rm -f "$shim" 2>/dev/null; then
-        info "removed stale shim: $shim"
-      else
-        warn "could not remove $shim — npm install may fail with EEXIST"
-      fi
-    fi
-  done
-fi
-
-# Intentionally no version pin: `npm install -g @bigbrainforge/forge-plugin`
-# resolves to the `@latest` dist-tag, which the release pipeline sets on
-# every publish (release.yml publish-plugin step). The post-install verify
-# below asserts we got @latest, fails loud if the registry returned an
-# older version (corp mirror lag, npm cache poisoning, etc.).
-#
-# --ignore-scripts: mandatory supply-chain default (the plugin ships no
-#   install scripts, so it's a safe no-op that satisfies the rule; the
-#   `forge-plugin` bin is run explicitly below, not via a lifecycle script).
-# --min-release-age=0: exempt this first-party @bigbrainforge/* install from
-#   any client-side publish cooldown (min-release-age) — the cooldown defends
-#   against third-party compromise; we publish this package ourselves via the
-#   tag-gated release workflow. A client installing within the cooldown window
-#   right after a release would otherwise be blocked. See
-#   .forge/practices/first-party-publish-cooldown-bypass.md.
-npm install -g --ignore-scripts --min-release-age=0 "$PACKAGE_NAME" --no-audit --no-fund
-ok "ran npm install -g --ignore-scripts --min-release-age=0 ${PACKAGE_NAME}"
-
-# `npm list -g <pkg> --depth=0` prints lines like:
-#   /usr/local/lib
-#   └── @bigbrainforge/forge-plugin@2.2.0
-# Split each line on `@`; for a scoped package the version is always the
-# last @-delimited field (the leading `@` in the scope is the first delimiter
-# producing an empty field, the second `@` precedes the version).
-INSTALLED=$(npm list -g "$PACKAGE_NAME" --depth=0 2>/dev/null \
-  | awk -F@ '/'"$(printf '%s' "$PACKAGE_NAME" | sed 's:[/&]:\\&:g')"'@/ {print $NF; exit}')
-LATEST=$(npm view "$PACKAGE_NAME" version 2>/dev/null || echo "")
-if [ -n "$INSTALLED" ] && [ -n "$LATEST" ]; then
-  if [ "$INSTALLED" = "$LATEST" ]; then
-    ok "installed ${PACKAGE_NAME}@${INSTALLED} (matches registry @latest)"
-  else
-    die "version mismatch: installed ${INSTALLED} but registry @latest is ${LATEST}. Possible causes: stale npm cache (npm cache clean --force), corporate registry mirror lag, or an incomplete release publish. Re-run after resolving."
-  fi
-elif [ -n "$INSTALLED" ]; then
-  warn "installed ${PACKAGE_NAME}@${INSTALLED} but could not query registry @latest to verify (network / auth)"
-else
-  warn "${PACKAGE_NAME} installed but version could not be determined"
-fi
-
-# ── Step 5.5: install @bigbrainforge/forge (sealed CLI) ──────────────────────
-
-step "Step 5.5 — install ${CLI_PACKAGE_NAME}"
-
-# Install the sealed `forge` CLI directly on first install so the bundled
-# prebuilt tree-sitter native bindings reach clients without a local compile.
-# `--ignore-scripts` is MANDATORY here (supply-chain rule + the whole point):
-# the published bundle already carries the prebuild, so no install-time
-# compile is needed. Removing this flag would re-introduce the broken
-# `--ignore-scripts`-free build path the prebuild exists to eliminate.
-# `--min-release-age=0` exempts this first-party @bigbrainforge/* install from
-# any client-side publish cooldown — without it a client installing within the
-# cooldown window right after a release hits `ETARGET / No matching version`.
-# See .forge/practices/first-party-publish-cooldown-bypass.md.
-# `@latest` resolves to the dist-tag the release pipeline sets on every publish.
-if npm install -g --ignore-scripts --min-release-age=0 "${CLI_PACKAGE_NAME}@latest" --no-audit --no-fund; then
-  ok "ran npm install -g --ignore-scripts --min-release-age=0 ${CLI_PACKAGE_NAME}@latest"
-else
-  warn "could not install ${CLI_PACKAGE_NAME} — the plugin is installed and usable; run 'npm install -g --ignore-scripts --min-release-age=0 ${CLI_PACKAGE_NAME}@latest' or '/forge:setup update' later to add the CLI"
-fi
-
-# ── Step 6: FORGE_ACCESS_TOKEN ────────────────────────────────────────────────
-
-step "Step 6 — FORGE_ACCESS_TOKEN → env var"
+step "Step 5 — FORGE_ACCESS_TOKEN → env var"
 
 if [ "$SECRETS_BACKEND" = "gcp" ]; then
   store_token_in_gcp "FORGE_ACCESS_TOKEN" "$GCP_ACCESS_SECRET"
@@ -823,86 +744,47 @@ fi
 
 [ -n "${FORGE_ACCESS_TOKEN:-}" ] || warn "FORGE_ACCESS_TOKEN not populated in this shell (will be in new shells after profile reload)"
 
-# ── Step 6.9: nuke stale plugin state before postinstall ─────────────────────
-# Belt-and-suspenders for the pre-0.6.0 bin-shim collision trap.
+# ── Step 6: install the plugin via Claude Code's marketplace ─────────────────
 #
-# Scenario: a client on <= 0.5.29 runs install.sh to heal a broken install.
-# Step 5 already swept both packages + shims and installed a fresh scoped
-# @bigbrainforge/forge-plugin. But ~/.claude/commands/forge/ may still
-# contain stale setup.md / help.md / etc. from the deprecated 0.5.x binary
-# that wrote them. install.js's copyDir does overwrite matching files,
-# but any file present in the OLD tree yet absent in the NEW one would
-# linger — so we start from empty to guarantee a clean slate across major
-# structure changes.
-#
-# We also clear ~/.claude/forge/VERSION + update-state.json so the
-# postinstall writes them from scratch.
-#
-# ~/.claude/forge/bin/ is replaced by install.js's copy loop on every run
-# — we let it handle that to avoid interfering with any running Node
-# process holding a file handle. Backups under ~/.claude/forge/backup/
-# are rollback material and left intact.
+# The `claude` CLI does this non-interactively. `marketplace add` registers the
+# public manifest (bigbrainforge/forge-installers); `plugin install forge@forge`
+# pulls @bigbrainforge/forge-plugin from the private registry, authenticated by the
+# FORGE_PACKAGE_TOKEN this script just put in the environment plus the ~/.npmrc
+# reference. Claude Code's plugin system owns the install — nothing is copied
+# into ~/.claude/ by this script. Both calls are non-fatal: a failure here (the
+# marketplace already added, or the package not yet published) leaves the
+# prerequisites in place and prints the manual command to retry.
 
-step "Step 6.9 — clear stale plugin state (idempotent re-run safety)"
+step "Step 6 — install the Forge plugin via Claude Code's marketplace"
 
-for stale_path in \
-  "$HOME/.claude/commands/forge" \
-  "$HOME/.claude/forge/VERSION" \
-  "$HOME/.claude/forge/update-state.json"
-do
-  if [ -e "$stale_path" ]; then
-    if rm -rf "$stale_path" 2>/dev/null; then
-      ok "cleared $stale_path"
-    else
-      warn "could not clear $stale_path (the postinstall will overwrite)"
-    fi
+if have claude; then
+  if claude plugin marketplace add bigbrainforge/forge-installers; then
+    ok "marketplace added: bigbrainforge/forge-installers"
+  else
+    warn "could not add marketplace (already added, or network/auth). Retry: claude plugin marketplace add bigbrainforge/forge-installers"
   fi
-done
-
-# ── Step 7: run forge-plugin ─────────────────────────────────────────────────
-# Copies slash commands, hooks, statusline, and utility scripts into
-# ~/.claude/. Also registers the MCP server with Claude Code's config.
-
-step "Step 7 — Claude Code plugin → ~/.claude/"
-
-if have forge-plugin; then
-  forge-plugin || die "forge-plugin install exited with non-zero status"
-  ok "plugin installed to ~/.claude/"
+  if claude plugin install forge@forge; then
+    ok "installed plugin: forge@forge"
+  else
+    warn "could not install the plugin. Retry after launching Claude Code: claude plugin install forge@forge"
+  fi
 else
-  die "forge-plugin binary not on PATH after npm install. Check: npm config get prefix"
-fi
-
-# ── Step 8: verify plugin files ──────────────────────────────────────────────
-
-if [ "$SKIP_VERIFY" = "true" ]; then
-  step "Step 8 — verify (skipped by flag)"
-else
-  step "Step 8 — verify"
-  # Verify the canonical entry-point command landed. /forge:goal is the
-  # entry point as of v2.2 (PR #574 deprecated and archived /forge:new);
-  # this check is the durable invariant — every supported plugin version
-  # ships goal.md.
-  if [ ! -f "$HOME/.claude/commands/forge/goal.md" ]; then
-    die "~/.claude/commands/forge/goal.md missing — plugin install did not complete"
-  fi
-  ok "slash commands installed at ~/.claude/commands/forge/"
-  if [ ! -f "$HOME/.claude/forge/VERSION" ]; then
-    die "~/.claude/forge/VERSION missing — plugin install did not complete"
-  fi
-  ok "plugin VERSION: $(cat "$HOME/.claude/forge/VERSION")"
+  warn "claude CLI not on PATH. Install Claude Code, then run:"
+  warn "    claude plugin marketplace add bigbrainforge/forge-installers"
+  warn "    claude plugin install forge@forge"
 fi
 
 # ── Done ─────────────────────────────────────────────────────────────────────
 
 cat <<EOF
 
-$(printf '\033[1;32m✓ Forge plugin installed successfully.\033[0m')
+$(printf '\033[1;32m✓ Forge installed.\033[0m')
 
-  $(printf '\033[1;33m! Required next step — load FORGE_PACKAGE_TOKEN and FORGE_ACCESS_TOKEN:\033[0m')
+  $(printf '\033[1;33m! Required — load FORGE_PACKAGE_TOKEN and FORGE_ACCESS_TOKEN before using the plugin:\033[0m')
 
     The installer appended env-var lines to: $PROFILE
-    Existing shells (including the one running this installer) do NOT have
-    those env vars set. Before launching Claude Code, either:
+    Existing shells (including this one) do NOT have those env vars set, and the
+    plugin needs FORGE_ACCESS_TOKEN to reach your Forge MCP endpoint. Either:
 
       $(printf '\033[1m• Open a new terminal\033[0m'), or
       $(printf '\033[1m• Run:  source %s\033[0m' "$PROFILE")
@@ -913,15 +795,15 @@ $(printf '\033[1;32m✓ Forge plugin installed successfully.\033[0m')
 
   Next:
     1. Open a new shell (or source $PROFILE) — see above.
-    2. Launch Claude Code from that shell so it inherits the env vars.
-    3. In Claude Code, run:  /forge:help
+    2. (Re)launch Claude Code from that shell so it loads the plugin + env vars.
+    3. Run:  /forge:help
     4. Start your first goal:    /forge:goal "<your-objective>"
 
-  The plugin runs against your Forge MCP endpoint. No local CLI needed —
-  atlas indexing is handled centrally by the Forge team.
+  If the marketplace step above warned, re-run it once claude is on PATH:
+      claude plugin marketplace add bigbrainforge/forge-installers
+      claude plugin install forge@forge
 
-  Troubleshooting: see client-install.md, or re-run this installer — it's
-  idempotent.
+  Troubleshooting: see client-install.md, or re-run this installer — it's idempotent.
 EOF
 
-# forge release: forge-v2.45.7
+# forge release: forge-v3.0.0

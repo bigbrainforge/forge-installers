@@ -1,22 +1,24 @@
 <#
 .SYNOPSIS
-    @bigbrainforge/forge-plugin — Windows installer.
+    @bigbrainforge/forge-plugin — Windows prerequisite installer.
 
 .DESCRIPTION
-    One-command client install for the Forge Claude Code plugin. Handles:
-      - nvm-windows detection (installs via winget if available)
-      - Node 24 LTS install + use
+    Sets up everything the Forge Claude Code plugin needs, then installs the
+    plugin through Claude Code's marketplace. Handles:
+      - Node: install via nvm-windows only if the client's Node is missing or
+        below the repo minimum (otherwise their existing Node is left untouched)
       - FORGE_PACKAGE_TOKEN storage (Windows Credential Manager, GCP Secret Manager, or 1Password)
-      - .npmrc registry + auth config
-      - npm install -g @bigbrainforge/forge-plugin
+      - .npmrc registry + auth reference (the token stays in the env, never on disk)
       - FORGE_ACCESS_TOKEN storage (same secrets backend)
       - PowerShell $PROFILE wiring
-      - forge-plugin run (copies slash commands + statusline into ~/.claude/)
-      - Plugin-file verification
+      - claude plugin marketplace add + claude plugin install forge@forge
 
-    The plugin is a standalone artifact — it runs against the deployed Forge
-    MCP server and does not require the `forge` CLI, atlas, or shield to be
-    installed locally. Claude Code must already be installed.
+    The plugin installs natively via Claude Code's CLI — this script runs
+    `claude plugin marketplace add bigbrainforge/forge-installers` then
+    `claude plugin install forge@forge`. Claude Code pulls the package from the
+    private registry using the FORGE_PACKAGE_TOKEN this script put in your
+    environment. Nothing is copied into ~/.claude/ by this script, and no
+    `forge` CLI is installed locally. Claude Code must already be installed.
 
     Re-run is safe — all operations are idempotent.
 
@@ -50,9 +52,6 @@
 .PARAMETER OpField
     1Password field name within each item that holds the secret. Default:
     credential.
-
-.PARAMETER SkipVerify
-    Skip the final plugin-file verification step.
 
 .EXAMPLE
     .\install.ps1
@@ -122,8 +121,6 @@ param(
 
     [switch]$NonInteractive,
 
-    [switch]$SkipVerify,
-
     # Force fresh token prompts even if existing tokens are detected in
     # Credential Manager or GCP. Use for rotation, or when the stored
     # tokens are known bad (e.g. 401 from GitHub Packages). Without this
@@ -133,16 +130,15 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
-$ScriptVersion = '0.3.1'
-# Exact patch pin — same version on dev box, CI, and clients. Eliminates the
-# "works locally, fails on CI" class of drift caused by major-only pins
-# picking different patches. Bump in lockstep with .nvmrc and CI workflows.
-$NodeVersion = '24.15.0'
+$ScriptVersion = '0.4.0'
+# Minimum Node the plugin + Forge tooling require, AND the version installed via
+# nvm-windows when the client's Node is missing or too old. Mirrors the repo's
+# .nvmrc floor; a test in the forge-dist suite fails if the two ever drift
+# apart. We do not force an exact version on clients — any Node >= this is left
+# in place. (Declared as $NODE_VERSION; PowerShell variable names are
+# case-insensitive, so the $NODE_VERSION usages below reference this same value.)
+$NODE_VERSION = '24.15.0'
 $PackageName = '@bigbrainforge/forge-plugin'
-# Sealed `forge` CLI — installed directly on first install (Step 5.5) so the
-# bundled prebuilt tree-sitter native bindings reach clients without a local
-# compile. Distinct from the plugin above; always installed with --ignore-scripts.
-$CliPackageName = '@bigbrainforge/forge'
 $RegistryUrl = 'https://npm.pkg.github.com'
 $RegistryHost = 'npm.pkg.github.com'
 $PatVar = 'FORGE_PACKAGE_TOKEN'
@@ -498,19 +494,14 @@ function Clear-StaleKeystoreEntries {
     }
 }
 
-# ── Step 1: Node $NodeVersion via nvm-windows ────────────────────────────────
+# ── Step 1: Node (>= repo minimum, install only if needed) ───────────────────
 #
-# Fast path: if exactly Node $NodeVersion is on PATH, skip nvm entirely.
-# Clients with their own matching Node install (MSI, corp-managed, or an
-# nvm4w setup) don't need us to touch their setup. Re-runs are non-destructive
-# for healthy installs.
-#
-# Slow path: install nvm-windows via winget if missing, then `nvm install
-# $NodeVersion` (idempotent — won't re-download if present), `nvm use
-# $NodeVersion`, refresh $env:Path so the just-activated Node is visible
-# downstream in this session. Pinning to the exact patch ensures every
-# Forge client runs the same Node binary the sealed bundle was built
-# against (Node ABI 137 for 24.x — tree-sitter natives compile from source on install).
+# We do NOT force an exact version on the client. If their Node already meets
+# the minimum ($NODE_VERSION, which mirrors the repo's .nvmrc floor) we leave it
+# untouched. Only when Node is missing or too old do we install $NODE_VERSION via
+# nvm-windows. Claude Code runs the plugin's scripts under whatever Node is on
+# PATH, so "new enough" is the only requirement — the marketplace install does
+# the rest.
 
 # Helper: safely read node version without tripping $ErrorActionPreference='Stop'.
 function Get-NodeVersionSafe {
@@ -522,12 +513,31 @@ function Get-NodeVersionSafe {
     return $null
 }
 
-Write-Step "Step 1 — Node $NodeVersion"
+# Version-floor test: $true when semver $Current >= $Minimum. A leading 'v' on
+# either side is tolerated. PowerShell's [version] type does the comparison
+# (the Windows analogue of install.sh's `sort -V` helper).
+function Test-NodeVersionAtLeast([string]$Current, [string]$Minimum) {
+    $c = $Current.TrimStart('v')
+    $m = $Minimum.TrimStart('v')
+    try {
+        return ([version]$c -ge [version]$m)
+    } catch {
+        return $false
+    }
+}
+
+Write-Step "Step 1 — Node (>= $NODE_VERSION)"
 
 $existingNode = Get-NodeVersionSafe
-if ($existingNode -eq "v$NodeVersion") {
-    Write-Ok "Node $existingNode already active (exact pin match) — skipping nvm"
+if ($existingNode -and (Test-NodeVersionAtLeast $existingNode $NODE_VERSION)) {
+    Write-Ok "Node $existingNode already satisfies the minimum (>= $NODE_VERSION) — leaving it"
 } else {
+    if ($existingNode) {
+        Write-InfoMsg "Node $existingNode is below the required minimum $NODE_VERSION — installing via nvm-windows"
+    } else {
+        Write-InfoMsg "Node not found — installing $NODE_VERSION via nvm-windows"
+    }
+
     if (-not (Test-Command 'nvm')) {
         Write-InfoMsg 'nvm-windows not found'
         if (Test-Command 'winget') {
@@ -544,12 +554,12 @@ if ($existingNode -eq "v$NodeVersion") {
         }
     }
 
-    $installed = & nvm list 2>$null | Select-String -Pattern ([regex]::Escape($NodeVersion)) -Quiet
+    $installed = & nvm list 2>$null | Select-String -Pattern ([regex]::Escape($NODE_VERSION)) -Quiet
     if (-not $installed) {
-        Write-InfoMsg "installing Node $NodeVersion"
-        & nvm install $NodeVersion | Out-Null
+        Write-InfoMsg "installing Node $NODE_VERSION"
+        & nvm install $NODE_VERSION | Out-Null
     }
-    & nvm use $NodeVersion | Out-Null
+    & nvm use $NODE_VERSION | Out-Null
 
     # Refresh PATH so the just-activated Node is visible to `node`/`npm`
     # invocations downstream in this session. Without this, `nvm use`
@@ -559,17 +569,16 @@ if ($existingNode -eq "v$NodeVersion") {
 
     # NOTE: PowerShell variable names are case-INsensitive. This local must
     # not reuse the pin's name in lowercase — that is the SAME variable as
-    # the script-level $NodeVersion pin, and assigning "v24.15.0" here
-    # clobbered the pin, making the comparison below "v24.15.0" -ne
-    # "vv24.15.0" → a guaranteed Die on every fresh machine that took the
-    # nvm slow path. Pinned by the installer-ps1-case-insensitive-vars
-    # sentinel (forge-plugin test suite).
+    # the script-level $NODE_VERSION pin, and assigning a value here would
+    # clobber the pin. The distinct name $activeNode keeps them separate.
     $activeNode = Get-NodeVersionSafe
     if (-not $activeNode) {
         Die 'node not on PATH after nvm use + PATH refresh. Close this PowerShell, open a fresh one, and re-run the installer.'
     }
-    if ($activeNode -ne "v$NodeVersion") { Die "expected Node v$NodeVersion exactly, got $activeNode" }
-    Write-Ok "Node $activeNode active (exact pin)"
+    if (-not (Test-NodeVersionAtLeast $activeNode $NODE_VERSION)) {
+        Die "Node $activeNode active but the minimum is $NODE_VERSION. Run: nvm use $NODE_VERSION"
+    }
+    Write-Ok "Node $activeNode active (>= $NODE_VERSION)"
 }
 
 # ── Step 2: choose secrets backend ───────────────────────────────────────────
@@ -577,12 +586,10 @@ if ($existingNode -eq "v$NodeVersion") {
 # Self-heal on re-run: if the user already has FORGE_PACKAGE_TOKEN AND
 # FORGE_ACCESS_TOKEN in Windows Credential Manager (from a prior install),
 # skip the backend prompt and auto-select `keystore`. This is what makes
-# the installer idempotent — a pilot client hitting the pre-0.6.0 bin-shim
-# collision can re-run `install.ps1` with zero prompts and the installer
-# heals the state (sweeps shims, reinstalls scoped package, nukes stale
-# command markdown, re-runs postinstall). Without this auto-detect, even
-# the idempotent `Install-TokenInCredman` path would still stop at the
-# backend-choice prompt.
+# the installer idempotent — re-running `install.ps1` re-applies the
+# prerequisites and re-runs the marketplace install with zero prompts.
+# Without this auto-detect, even the idempotent `Install-TokenInCredman`
+# path would still stop at the backend-choice prompt.
 #
 # -ForceTokens bypasses the detection for rotation / bad-token cases.
 
@@ -891,124 +898,9 @@ Add-NpmrcLine "@bigbrainforge:registry=$RegistryUrl"
 Add-NpmrcLine "//${RegistryHost}/:_authToken=`${$PatVar}"
 Add-NpmrcLine 'always-auth=true'
 
-# ── Step 5: npm install ──────────────────────────────────────────────────────
+# ── Step 5: FORGE_ACCESS_TOKEN → env var ──────────────────────────────────────
 
-Write-Step "Step 5 — install $PackageName"
-
-# Cleanup prior installs that collide on the `forge-plugin` bin name.
-#
-# Two scenarios we defend against:
-#   1. The client previously installed the deprecated public `forge-plugin@*`
-#      package from npmjs.com (pre-PR #230). That package declares
-#      `"bin": { "forge-plugin": ... }` identical to the new
-#      `@bigbrainforge/forge-plugin`, so npm refuses with EEXIST when it
-#      tries to write the new shim over the old one.
-#   2. A prior run of this installer crashed mid-install (see the
-#      forge-v0.5.25 Credman bug) and left a partial `@bigbrainforge/forge-plugin`
-#      global install with bin shims but inconsistent metadata — npm treats
-#      that as EEXIST too.
-#
-# Both `npm uninstall -g` calls are idempotent: they print a warning and
-# exit 0 if the package isn't installed, which is exactly what we want.
-# We still sweep the bare bin shim as a belt-and-suspenders fallback for
-# the case where uninstall leaves the shim behind (observed when the
-# package's lib dir was manually removed before uninstall ran).
-Write-InfoMsg 'Removing any stale forge-plugin shims from prior installs...'
-& npm uninstall -g forge-plugin --silent 2>$null | Out-Null
-& npm uninstall -g $PackageName --silent 2>$null | Out-Null
-
-# Sweep shim directories. `npm config get prefix` covers the currently-
-# active Node (e.g. nvm4w's). But a common failure mode is stale shims
-# from an earlier Node install living in `%APPDATA%\npm` (classic Windows
-# default, used by the system Node installer). If that directory is on
-# PATH ahead of the current prefix — which it often is — the old
-# `forge-plugin.cmd` there wins PATH resolution and writes 0.5.19 content
-# into ~/.claude/ every time install.ps1 runs Step 7. Sweep both.
-$shimDirs = [System.Collections.Generic.List[string]]::new()
-$npmPrefix = (& npm config get prefix 2>$null).Trim()
-if ($npmPrefix) { [void]$shimDirs.Add($npmPrefix) }
-$roamingNpm = Join-Path $env:APPDATA 'npm'
-if (Test-Path -LiteralPath $roamingNpm) { [void]$shimDirs.Add($roamingNpm) }
-foreach ($dir in ($shimDirs | Select-Object -Unique)) {
-    foreach ($leaf in @('forge-plugin', 'forge-plugin.cmd', 'forge-plugin.ps1')) {
-        $stale = Join-Path $dir $leaf
-        if (Test-Path -LiteralPath $stale) {
-            try {
-                Remove-Item -LiteralPath $stale -Force -ErrorAction Stop
-                Write-InfoMsg "removed stale shim: $stale"
-            } catch {
-                Write-WarnMsg "could not remove $stale — npm install may fail with EEXIST: $($_.Exception.Message)"
-            }
-        }
-    }
-}
-
-# Intentionally no version pin: `npm install -g @bigbrainforge/forge-plugin`
-# resolves to the `@latest` dist-tag, which the release pipeline sets on
-# every publish. The post-install verify below asserts we got @latest;
-# fails loud if the registry returned an older version (corp mirror lag,
-# npm cache poisoning, etc.).
-#
-# --ignore-scripts: mandatory supply-chain default (the plugin ships no
-#   install scripts, so it's a safe no-op; the `forge-plugin` bin is run
-#   explicitly below, not via a lifecycle script).
-# --min-release-age=0: exempt this first-party @bigbrainforge/* install from
-#   any client-side publish cooldown — the cooldown defends against
-#   third-party compromise; we publish this package ourselves via the
-#   tag-gated release workflow. See
-#   .forge/practices/first-party-publish-cooldown-bypass.md.
-& npm install -g --ignore-scripts --min-release-age=0 $PackageName --no-audit --no-fund
-if ($LASTEXITCODE -ne 0) { Die 'npm install failed — see output above' }
-Write-Ok "ran npm install -g --ignore-scripts --min-release-age=0 $PackageName"
-
-$installedJson = & npm ls -g $PackageName --depth=0 --json 2>$null
-$installed = $null
-try {
-    $parsed = $installedJson | ConvertFrom-Json
-    if ($parsed.dependencies -and $parsed.dependencies.$PackageName) {
-        $installed = $parsed.dependencies.$PackageName.version
-    }
-} catch { }
-
-$latest = (& npm view $PackageName version 2>$null)
-
-if ($installed -and $latest) {
-    if ($installed -eq $latest) {
-        Write-Ok "installed $PackageName@$installed (matches registry @latest)"
-    } else {
-        Die "version mismatch: installed $installed but registry @latest is $latest. Possible causes: stale npm cache (npm cache clean --force), corporate registry mirror lag, or an incomplete release publish. Re-run after resolving."
-    }
-} elseif ($installed) {
-    Write-WarnMsg "installed $PackageName@$installed but could not query registry @latest to verify (network / auth)"
-} else {
-    Write-WarnMsg "$PackageName installed but version could not be determined"
-}
-
-# ── Step 5.5: install @bigbrainforge/forge (sealed CLI) ──────────────────────
-
-Write-Step "Step 5.5 — install $CliPackageName"
-
-# Install the sealed `forge` CLI directly on first install so the bundled
-# prebuilt tree-sitter native bindings reach clients without a local compile.
-# `--ignore-scripts` is MANDATORY here (supply-chain rule + the whole point):
-# the published bundle already carries the prebuild, so no install-time
-# compile is needed. Removing this flag would re-introduce the broken
-# `--ignore-scripts`-free build path the prebuild exists to eliminate.
-# `--min-release-age=0` exempts this first-party @bigbrainforge/* install from
-# any client-side publish cooldown — without it a client installing within the
-# cooldown window right after a release hits `ETARGET / No matching version`.
-# See .forge/practices/first-party-publish-cooldown-bypass.md.
-# `@latest` resolves to the dist-tag the release pipeline sets on every publish.
-& npm install -g --ignore-scripts --min-release-age=0 "$CliPackageName@latest" --no-audit --no-fund
-if ($LASTEXITCODE -ne 0) {
-    Write-WarnMsg "could not install $CliPackageName — the plugin is installed and usable; run 'npm install -g --ignore-scripts --min-release-age=0 $CliPackageName@latest' or '/forge:setup update' later to add the CLI"
-} else {
-    Write-Ok "ran npm install -g --ignore-scripts --min-release-age=0 $CliPackageName@latest"
-}
-
-# ── Step 6: FORGE_ACCESS_TOKEN → env var ──────────────────────────────────────
-
-Write-Step "Step 6 — $TokVar → env var"
+Write-Step "Step 5 — $TokVar → env var"
 
 if ($Secrets -eq 'gcp') {
     Install-TokenInGcp $TokVar $GcpAccessSecret
@@ -1025,7 +917,7 @@ if (-not $currentTok) {
     if ($Secrets -eq 'onepassword') {
         # Step 2 already verified the item resolved via op read. A
         # subsequent empty value here means op broke between Step 2
-        # and Step 6 (desktop app re-locked, vault permission revoked,
+        # and Step 5 (desktop app re-locked, vault permission revoked,
         # field renamed mid-install). Die loudly — silent warn would
         # let the installer exit 0 with a non-functional access token.
         Die "$TokVar empty after 1Password read — op returned empty despite Step 2 vault probe succeeding. Check: 1Password desktop app is unlocked, vault access not revoked, item '$OpAccessItem' field '$OpField' not modified mid-install."
@@ -1033,129 +925,51 @@ if (-not $currentTok) {
     Write-WarnMsg "$TokVar not populated in this session (will be in new shells after `$PROFILE reload)"
 }
 
-# ── Step 6.5: BurntToast for auto-update notifications (Windows only) ────────
-# The plugin's Stop hook (auto-update-if-eligible.js) emits OS toast
-# notifications after auto-installing a new plugin release ("restart
-# Claude Code to load X.Y.Z"). macOS uses built-in `osascript`; on
-# Windows the notifier shells out to `New-BurntToastNotification`,
-# which requires the BurntToast PowerShell module. Install here,
-# per-user, no admin — same pattern the claude-Win11-notifications
-# skill uses. Idempotent: re-runs are a no-op because `-Force` is
-# paired with Get-Module check below.
+# ── Step 6: install the plugin via Claude Code's marketplace ─────────────────
 #
-# Failure modes (corp policy blocks PSGallery, proxy issues, etc.)
-# degrade gracefully: the plugin statusline still nudges via its
-# cyan "<current>-><target>" segment; only the toast layer is lost.
+# The `claude` CLI does this non-interactively. `marketplace add` registers the
+# public manifest (bigbrainforge/forge-installers); `plugin install forge@forge`
+# pulls @bigbrainforge/forge-plugin from the private registry, authenticated by
+# the FORGE_PACKAGE_TOKEN this script just put in the environment plus the
+# ~/.npmrc reference. Claude Code's plugin system owns the install — nothing is
+# copied into ~/.claude/ by this script. Both calls are non-fatal: a failure
+# here (marketplace already added, or the package not yet published) leaves the
+# prerequisites in place and prints the manual command to retry. Native exit
+# codes do not trip $ErrorActionPreference='Stop', so $LASTEXITCODE is checked
+# explicitly.
 
-Write-Step 'Step 6.5 — BurntToast for Windows toast notifications'
+Write-Step "Step 6 — install the Forge plugin via Claude Code's marketplace"
 
-if (Get-Module -ListAvailable -Name BurntToast) {
-    Write-Ok 'BurntToast already installed'
+if (Get-Command claude -ErrorAction SilentlyContinue) {
+    & claude plugin marketplace add bigbrainforge/forge-installers
+    if ($LASTEXITCODE -eq 0) {
+        Write-Ok 'marketplace added: bigbrainforge/forge-installers'
+    } else {
+        Write-WarnMsg 'could not add marketplace (already added, or network/auth). Retry: claude plugin marketplace add bigbrainforge/forge-installers'
+    }
+    & claude plugin install forge@forge
+    if ($LASTEXITCODE -eq 0) {
+        Write-Ok 'installed plugin: forge@forge'
+    } else {
+        Write-WarnMsg 'could not install the plugin. Retry after launching Claude Code: claude plugin install forge@forge'
+    }
 } else {
-    try {
-        Install-Module -Name BurntToast -Scope CurrentUser -Force -AllowClobber -ErrorAction Stop
-        Write-Ok 'BurntToast installed (CurrentUser scope)'
-    } catch {
-        Write-WarnMsg "BurntToast install failed: $($_.Exception.Message)"
-        Write-WarnMsg '  Auto-update statusline nudge will still work; only OS toasts are lost.'
-        Write-WarnMsg '  To retry later: pwsh -Command "Install-Module -Name BurntToast -Scope CurrentUser -Force"'
-    }
-}
-
-# ── Step 6.9: nuke stale plugin state before postinstall ─────────────────────
-# Belt-and-suspenders for the pre-0.6.0 bin-shim collision trap.
-#
-# Scenario: a client on <= 0.5.29 runs install.ps1 to heal a broken
-# install. Step 5 already swept both packages + shims and installed a
-# fresh scoped @bigbrainforge/forge-plugin. But ~/.claude/commands/forge/
-# still contains the STALE setup.md / help.md / new.md / etc. from the
-# deprecated 0.5.x binary that wrote them. install.js's `copyDir` does
-# overwrite matching files, but any file present in the OLD tree yet
-# absent in the NEW one would linger — and for upgrades across major-
-# structure changes, the safest default is to start empty.
-#
-# We also clear ~/.claude/forge/VERSION + update-state.json so the
-# postinstall writes them from scratch (the v0.6.0+ install.js reads
-# package.json's version correctly, but clearing the old file eliminates
-# any chance of a reader picking up a stale cached value from a prior
-# session that held a file handle).
-#
-# ~/.claude/forge/bin/ is replaced by install.js's copy loop on every
-# run, so we let it handle that to avoid interfering with any running
-# Node process holding a file handle. Backups (~/.claude/forge/backup/)
-# are left intact — they're rollback material, not stale state.
-
-Write-Step 'Step 6.9 — clear stale plugin state (idempotent re-run safety)'
-
-$claudeDir = Join-Path $env:USERPROFILE '.claude'
-$forgeDir = Join-Path $claudeDir 'forge'
-$cmdsDir = Join-Path $claudeDir 'commands\forge'
-
-foreach ($stalePath in @(
-    $cmdsDir,
-    (Join-Path $forgeDir 'VERSION'),
-    (Join-Path $forgeDir 'update-state.json')
-)) {
-    if (Test-Path -LiteralPath $stalePath) {
-        try {
-            Remove-Item -LiteralPath $stalePath -Recurse -Force -ErrorAction Stop
-            Write-Ok "cleared $stalePath"
-        } catch {
-            Write-WarnMsg "could not clear $stalePath (the postinstall will overwrite): $($_.Exception.Message)"
-        }
-    }
-}
-
-# ── Step 7: run forge-plugin ─────────────────────────────────────────────────
-# Copies slash commands, hooks, statusline, and utility scripts into
-# ~/.claude/. Also registers the MCP server with Claude Code's config.
-
-Write-Step 'Step 7 — Claude Code plugin → ~/.claude/'
-
-if (Test-Command 'forge-plugin') {
-    & forge-plugin
-    if ($LASTEXITCODE -ne 0) {
-        Die 'forge-plugin install exited with non-zero status'
-    }
-    Write-Ok 'plugin installed to ~/.claude/'
-} else {
-    Die 'forge-plugin binary not on PATH after npm install. Check: npm config get prefix'
-}
-
-# ── Step 8: verify plugin files ──────────────────────────────────────────────
-
-if ($SkipVerify) {
-    Write-Step 'Step 8 — verify (skipped by flag)'
-} else {
-    Write-Step 'Step 8 — verify'
-    $claudeHome = Join-Path $env:USERPROFILE '.claude'
-    # Verify the canonical entry-point command landed. /forge:goal is the
-    # entry point as of v2.2 (PR #574 deprecated and archived /forge:new);
-    # this check is the durable invariant — every supported plugin version
-    # ships goal.md.
-    $goalCmd = Join-Path $claudeHome 'commands\forge\goal.md'
-    $versionFile = Join-Path $claudeHome 'forge\VERSION'
-    if (-not (Test-Path $goalCmd)) {
-        Die "$goalCmd missing — plugin install did not complete"
-    }
-    Write-Ok "slash commands installed at $(Join-Path $claudeHome 'commands\forge')"
-    if (-not (Test-Path $versionFile)) {
-        Die "$versionFile missing — plugin install did not complete"
-    }
-    $ver = Get-Content $versionFile
-    Write-Ok "plugin VERSION: $ver"
+    Write-WarnMsg 'claude CLI not on PATH. Install Claude Code, then run:'
+    Write-WarnMsg '    claude plugin marketplace add bigbrainforge/forge-installers'
+    Write-WarnMsg '    claude plugin install forge@forge'
 }
 
 # ── Done ─────────────────────────────────────────────────────────────────────
 
 Write-Host ''
-Write-Host '✓ Forge plugin installed successfully.' -ForegroundColor Green
+Write-Host '✓ Forge installed.' -ForegroundColor Green
 Write-Host ''
-Write-Host '  ! Required next step — load FORGE_PACKAGE_TOKEN and FORGE_ACCESS_TOKEN:' -ForegroundColor Yellow
+Write-Host '  ! Required — load FORGE_PACKAGE_TOKEN and FORGE_ACCESS_TOKEN before using the plugin:' -ForegroundColor Yellow
 Write-Host ''
 Write-Host "    The installer appended env-var lines to: $PROFILE"
-Write-Host '    Existing PowerShell sessions (including this one) do NOT have'
-Write-Host '    those env vars set. Before launching Claude Code, either:'
+Write-Host '    Existing PowerShell sessions (including this one) do NOT have those'
+Write-Host '    env vars set, and the plugin needs FORGE_ACCESS_TOKEN to reach your'
+Write-Host '    Forge MCP endpoint. Either:'
 Write-Host ''
 Write-Host '      • Open a new PowerShell window, or' -ForegroundColor White
 Write-Host "      • Run:  . `"$PROFILE`"" -ForegroundColor White
@@ -1166,14 +980,15 @@ Write-Host '      # both lengths should be non-zero'
 Write-Host ''
 Write-Host '  Next:'
 Write-Host "    1. Open a new PowerShell (or dot-source `"$PROFILE`") — see above."
-Write-Host '    2. Launch Claude Code from that shell so it inherits the env vars.'
-Write-Host '    3. In Claude Code, run:  /forge:help'
+Write-Host '    2. (Re)launch Claude Code from that shell so it loads the plugin + env vars.'
+Write-Host '    3. Run:  /forge:help'
 Write-Host '    4. Start your first goal:    /forge:goal "<your-objective>"'
 Write-Host ''
-Write-Host '  The plugin runs against your Forge MCP endpoint. No local CLI needed —'
-Write-Host '  atlas indexing is handled centrally by the Forge team.'
+Write-Host '  If the marketplace step above warned, re-run it once claude is on PATH:'
+Write-Host '      claude plugin marketplace add bigbrainforge/forge-installers'
+Write-Host '      claude plugin install forge@forge'
 Write-Host ''
 Write-Host '  Troubleshooting: see client-install.md, or re-run this installer —'
 Write-Host '  it is idempotent.'
 
-# forge release: forge-v2.45.7
+# forge release: forge-v3.0.0
