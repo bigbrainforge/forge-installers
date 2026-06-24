@@ -947,11 +947,23 @@ if (Get-Command claude -ErrorAction SilentlyContinue) {
     } else {
         Write-WarnMsg 'could not add marketplace (already added, or network/auth). Retry: claude plugin marketplace add bigbrainforge/forge-installers'
     }
-    & claude plugin install forge@forge
+    # First-party cooldown bypass (.forge/practices/first-party-publish-cooldown-bypass.md):
+    # if the client's npm enforces a publish cooldown (min-release-age), `@latest`
+    # resolves to a STALE pre-cooldown version for the first few days after a Forge
+    # release. The marketplace installer's argv can't carry --min-release-age=0, so
+    # scope the bypass to THIS first-party @bigbrainforge install via the npm env
+    # config (it outranks both project and user .npmrc). Set + restored; never third-party.
+    # Remove-Item is a cmdlet, so it does not clobber $LASTEXITCODE from `claude`.
+    $env:npm_config_min_release_age = '0'
+    try {
+        & claude plugin install forge@forge
+    } finally {
+        Remove-Item Env:npm_config_min_release_age -ErrorAction SilentlyContinue
+    }
     if ($LASTEXITCODE -eq 0) {
         Write-Ok 'installed plugin: forge@forge'
     } else {
-        Write-WarnMsg 'could not install the plugin. Retry after launching Claude Code: claude plugin install forge@forge'
+        Write-WarnMsg 'could not install the plugin. Retry after launching Claude Code: npm_config_min_release_age=0 claude plugin install forge@forge'
     }
 } else {
     Write-WarnMsg 'claude CLI not on PATH. Install Claude Code, then run:'
@@ -991,4 +1003,4 @@ Write-Host ''
 Write-Host '  Troubleshooting: see client-install.md, or re-run this installer —'
 Write-Host '  it is idempotent.'
 
-# forge release: forge-v3.0.2
+# forge release: forge-v3.0.3

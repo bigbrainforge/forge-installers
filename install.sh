@@ -763,10 +763,17 @@ if have claude; then
   else
     warn "could not add marketplace (already added, or network/auth). Retry: claude plugin marketplace add bigbrainforge/forge-installers"
   fi
-  if claude plugin install forge@forge; then
+  # First-party cooldown bypass (.forge/practices/first-party-publish-cooldown-bypass.md):
+  # if the client's npm enforces a publish cooldown (min-release-age), `@latest`
+  # would resolve to a STALE pre-cooldown version for the first few days after a
+  # Forge release — the marketplace installer's argv can't carry --min-release-age=0,
+  # so we scope the bypass to THIS first-party @bigbrainforge install via the npm
+  # env config (which outranks both project and user .npmrc). Scoped to one command;
+  # never applied to any third-party install.
+  if npm_config_min_release_age=0 claude plugin install forge@forge; then
     ok "installed plugin: forge@forge"
   else
-    warn "could not install the plugin. Retry after launching Claude Code: claude plugin install forge@forge"
+    warn "could not install the plugin. Retry after launching Claude Code: npm_config_min_release_age=0 claude plugin install forge@forge"
   fi
 else
   warn "claude CLI not on PATH. Install Claude Code, then run:"
@@ -806,4 +813,4 @@ $(printf '\033[1;32m✓ Forge installed.\033[0m')
   Troubleshooting: see client-install.md, or re-run this installer — it's idempotent.
 EOF
 
-# forge release: forge-v3.0.2
+# forge release: forge-v3.0.3
