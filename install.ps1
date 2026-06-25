@@ -727,6 +727,17 @@ elseif ($Secrets -eq 'onepassword') {
     Install-TokenInOnePassword $PatVar $OpPackageItem
 }
 else {
+    # On a fresh machine the pwsh profile dir/file doesn't exist yet. Both the
+    # legacy-block migration scan and the CredmanV2 injection below read and
+    # write $PROFILE, and `Select-String -Path $PROFILE` throws an
+    # ItemNotFoundException that -ErrorAction SilentlyContinue does NOT suppress
+    # when the profile's parent directory is missing (observed on PS 7.x). Create
+    # the file up front — New-Item -Force makes intermediate dirs — mirroring the
+    # Add-ProfileLine guard above so every later read/write lands on a real file.
+    if (-not (Test-Path $PROFILE)) {
+        New-Item -Type File -Force $PROFILE | Out-Null
+    }
+
     # Migration (forge-v0.5.28): earlier installer versions (<=0.5.27) emitted
     # a `# forge credman helper` block defining a type named `Credman` that
     # was either Read-only or shape-drifted from the installer's. When a
@@ -1003,4 +1014,4 @@ Write-Host ''
 Write-Host '  Troubleshooting: see client-install.md, or re-run this installer —'
 Write-Host '  it is idempotent.'
 
-# forge release: forge-v3.0.4
+# forge release: forge-v3.0.5
