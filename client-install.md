@@ -651,10 +651,10 @@ Missing-entry errors are expected and safe to ignore.
 
 #### Verify
 
-After updating the value:
+After updating the value, verify it from **inside Claude Code** (start a session, then ask Claude to run the diagnostic). The plugin resolves `${CLAUDE_PLUGIN_ROOT}` only within a Claude Code session — a standalone terminal will not expand it, and the marketplace-native plugin installs nothing at a fixed `~/.claude/forge/bin/` path:
 
 ```bash
-node ~/.claude/forge/bin/stage.js token --verify
+node ${CLAUDE_PLUGIN_ROOT}/scripts/stage.js token --verify
 ```
 
 This is a real network probe (not a local lookup) — it POSTs to `/api/atlas/ingest` and reports auth status. Procedure details and response classification are in the provenance doc's "Verifying the post-rotation state" section.
@@ -724,4 +724,4 @@ The 1Password backend reduces engineer onboarding to "add to vault → run insta
 - **Plugin / slash-command issues:** include the full command + output.
 - **Security concerns:** email security@bigbrainforge.com — do not file as public GitHub issues.
 
-<!-- forge release: forge-v3.1.0 -->
+<!-- forge release: forge-v3.1.1 -->
