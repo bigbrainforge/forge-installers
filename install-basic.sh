@@ -152,4 +152,4 @@ fi
 
 exit "$installer_exit"
 
-# forge release: forge-v3.1.1
+# forge release: forge-v3.2.0
