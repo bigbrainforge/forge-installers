@@ -1014,4 +1014,4 @@ Write-Host ''
 Write-Host '  Troubleshooting: see client-install.md, or re-run this installer —'
 Write-Host '  it is idempotent.'
 
-# forge release: forge-v3.2.1
+# forge release: forge-v3.2.2
