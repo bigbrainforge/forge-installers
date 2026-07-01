@@ -813,4 +813,4 @@ $(printf '\033[1;32m✓ Forge installed.\033[0m')
   Troubleshooting: see client-install.md, or re-run this installer — it's idempotent.
 EOF
 
-# forge release: forge-v3.2.5
+# forge release: forge-v3.2.6

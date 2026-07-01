@@ -585,9 +585,9 @@ printf '<new-value>' | gcloud secrets versions add FORGE_PACKAGE_TOKEN --data-fi
 
 ### 7.1 Rotating `FORGE_ACCESS_TOKEN`
 
-**Authoritative procedure: [`docs/as-built/forge-access-token-provenance.md`](../../../docs/as-built/forge-access-token-provenance.md).** That document is the source of truth for the dual-token model (`FORGE_ACCESS_TOKEN` for read/tool calls, `FORGE_INGEST_TOKEN` for atlas push), the three-store invariant for `FORGE_ACCESS_TOKEN` (Cloudflare Worker + GitHub repo secret + every workstation keystore), and the rotation procedure that keeps them consistent. Read it before rotating.
+Two tokens are involved: `FORGE_ACCESS_TOKEN` (read/tool calls) and `FORGE_INGEST_TOKEN` (atlas push). Rotate your workstation copy with the steps below. Your Forge operator rotates the server-side value and keeps the two consistent — coordinate with them before rotating so the change lands everywhere at once.
 
-The client-side mechanics for **your workstation copy** are below; the rest of the procedure (Cloudflare server + GitHub repo) lives in the provenance doc to keep one source of truth for the operator runbook.
+The steps below cover **your workstation copy** only; the server-side rotation is your Forge operator's responsibility.
 
 #### Update your workstation keystore
 
@@ -692,7 +692,7 @@ The 1Password backend reduces engineer onboarding to "add to vault → run insta
 2. Add two items in the vault: `FORGE_ACCESS_TOKEN` and `FORGE_PACKAGE_TOKEN`, each with the token value in the `credential` field.
 3. Grant each teammate access to the vault with **View Only + View and Copy Passwords** permissions. This is least-privilege for token consumers — they can read the value into `op read`, but cannot edit, share, or export it.
 4. In the vault's permission settings, explicitly disable **Copy and Share Items** and **Export Items** for the non-admin member role.
-5. Rotation stays admin-only: when a token rotates (per the [provenance doc](../../../docs/as-built/forge-access-token-provenance.md)), edit the item value in 1Password. Every teammate's next-opened shell picks up the new value automatically.
+5. Rotation stays admin-only: when a token rotates, edit the item value in 1Password. Every teammate's next-opened shell picks up the new value automatically.
 
 ### Teammate side (per-workstation)
 
@@ -724,4 +724,4 @@ The 1Password backend reduces engineer onboarding to "add to vault → run insta
 - **Plugin / slash-command issues:** include the full command + output.
 - **Security concerns:** email security@bigbrainforge.com — do not file as public GitHub issues.
 
-<!-- forge release: forge-v3.2.5 -->
+<!-- forge release: forge-v3.2.6 -->
