@@ -17,7 +17,14 @@
       },
       "description": "Forge slash commands, skills, hooks, MCP integration, and statusline. Installs the private @bigbrainforge/forge-plugin package; requires FORGE_PACKAGE_TOKEN in your npm registry auth.",
       "category": "developer-tools",
-      "keywords": ["forge", "orchestration", "claude-code", "compliance", "agentic"]
+      "keywords": [
+        "forge",
+        "orchestration",
+        "claude-code",
+        "compliance",
+        "agentic"
+      ],
+      "version": "3.2.5"
     }
   ]
 }
