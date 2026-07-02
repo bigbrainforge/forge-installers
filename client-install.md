@@ -313,9 +313,9 @@ If slash commands fail with a clear auth error, the shell Claude Code inherited 
 
 Without auto-reindex CI, your Atlas Map drifts as code lands on `main`. The Forge MCP server's `/forge:goal` Atlas pre-fetch then surfaces stale-Atlas reindex prompts on every iteration, and graph results lag the actual repo state. Wiring this once gives your repo the same auto-reindex behaviour the `bigbrainforge/forge` repo has — every merge to `main` triggers a re-index push, so the next `/forge:goal` reasons on fresh graph truth.
 
-### What `/forge:setup ci-reindex` does
+### What `/forge:atlas ci-install` does
 
-The subcommand stamps a workflow file at `.github/workflows/atlas-reindex-on-merge.yml` into your repo. Once stamped, your repo **owns the file** — the operator commits it like any other source. Re-running the subcommand updates the same file in place; it is idempotent and never duplicates. The version banner at the top of the workflow records which Forge version stamped it, so a later `/forge:setup ci-reindex` shows a clean diff when the template evolves (new event source, hardened guard, etc.).
+The subcommand stamps a workflow file at `.github/workflows/atlas-reindex-on-merge.yml` into your repo. Once stamped, your repo **owns the file** — the operator commits it like any other source. Re-running the subcommand updates the same file in place; it is idempotent and never duplicates. The version banner at the top of the workflow records which Forge version stamped it, so a later `/forge:atlas ci-install` shows a clean diff when the template evolves (new event source, hardened guard, etc.).
 
 ### Wire the repo secret first
 
@@ -350,7 +350,7 @@ npm install -g --ignore-scripts @bigbrainforge/forge@latest
 # 2. From inside the client repo, stamp the workflow file via Claude Code:
 claude
 # then in Claude Code:
-/forge:setup ci-reindex
+/forge:atlas ci-install
 
 # 3. Commit the stamped file to main so future PR merges fire it.
 git add .github/workflows/atlas-reindex-on-merge.yml
@@ -370,7 +370,7 @@ The job's last step prints `Atlas re-index pushed to <url> successfully.` on suc
 
 ### Updating the template later
 
-When Forge ships a newer template (a new event source, hardened guard, env-var tweak, etc.), the operator re-runs `/forge:setup ci-reindex` from inside the client repo and commits the diff. The version banner at the top of the workflow shows which Forge version stamped it; comparing it against `cat ~/.claude/forge/VERSION` tells you whether a re-stamp is worth doing.
+When Forge ships a newer template (a new event source, hardened guard, env-var tweak, etc.), the operator re-runs `/forge:atlas ci-install` from inside the client repo and commits the diff. The version banner at the top of the workflow shows which Forge version stamped it; comparing it against `cat ~/.claude/forge/VERSION` tells you whether a re-stamp is worth doing.
 
 ---
 
@@ -724,4 +724,4 @@ The 1Password backend reduces engineer onboarding to "add to vault → run insta
 - **Plugin / slash-command issues:** include the full command + output.
 - **Security concerns:** email security@bigbrainforge.com — do not file as public GitHub issues.
 
-<!-- forge release: forge-v3.2.6 -->
+<!-- forge release: forge-v3.3.0 -->
