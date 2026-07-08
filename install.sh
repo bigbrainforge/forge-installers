@@ -728,7 +728,6 @@ step "Step 4 — ~/.npmrc registry + auth"
 NPMRC="$HOME/.npmrc"
 append_if_missing "@bigbrainforge:registry=${REGISTRY_URL}" "$NPMRC"
 append_if_missing "//${REGISTRY_HOST}/:_authToken=\${FORGE_PACKAGE_TOKEN}" "$NPMRC"
-append_if_missing "always-auth=true" "$NPMRC"
 
 # ── Step 5: FORGE_ACCESS_TOKEN ───────────────────────────────────────────────
 
@@ -813,4 +812,4 @@ $(printf '\033[1;32m✓ Forge installed.\033[0m')
   Troubleshooting: see client-install.md, or re-run this installer — it's idempotent.
 EOF
 
-# forge release: forge-v3.5.0
+# forge release: forge-v3.6.0

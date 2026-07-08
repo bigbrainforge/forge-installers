@@ -907,7 +907,6 @@ Write-Step 'Step 4 — ~/.npmrc registry + auth'
 
 Add-NpmrcLine "@bigbrainforge:registry=$RegistryUrl"
 Add-NpmrcLine "//${RegistryHost}/:_authToken=`${$PatVar}"
-Add-NpmrcLine 'always-auth=true'
 
 # ── Step 5: FORGE_ACCESS_TOKEN → env var ──────────────────────────────────────
 
@@ -1014,4 +1013,4 @@ Write-Host ''
 Write-Host '  Troubleshooting: see client-install.md, or re-run this installer —'
 Write-Host '  it is idempotent.'
 
-# forge release: forge-v3.5.0
+# forge release: forge-v3.6.0

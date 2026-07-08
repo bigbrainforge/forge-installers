@@ -35,7 +35,7 @@ Before you start, a BigBrain representative will send you — out-of-band via an
 |---|---|
 | `FORGE_PACKAGE_TOKEN` | Read access to the `@bigbrainforge` GitHub Packages registry (`read:packages` scope). Claude Code uses it (via the `~/.npmrc` reference) to pull the plugin package when the installer runs `claude plugin install forge@forge`. |
 | `FORGE_ACCESS_TOKEN` | Bearer token for your Forge MCP endpoint. Used by the plugin's slash commands at runtime. |
-| Forge MCP endpoint URL | e.g. `https://forge-mcp.bigbrainforge.com` (already wired into the plugin's default config) |
+| Forge MCP endpoint URL | e.g. `https://<your-client-id>.bigbrainforge.com` — set as `FORGE_MCP_URL` before launching Claude Code (required; if unset, the Forge MCP server does not load) |
 | Your repo/project identifier | Used when starting a Forge goal (`/forge:goal` will prompt) |
 
 If your organisation uses **GCP Secret Manager** (the default for pilot clients), BigBrain will work with you to pre-populate two secrets in your GCP project:
@@ -265,11 +265,25 @@ op item edit FORGE_ACCESS_TOKEN credential='<new-token>' --vault='Platform - AI 
 
 ## 4. After install — load tokens, restart, verify
 
-The installer already installed the plugin for you — it ran `claude plugin marketplace add bigbrainforge/forge-installers` and `claude plugin install forge@forge` as its last step. You do **not** type any `/plugin` commands. All that's left is to load the two tokens into your environment, restart Claude Code so it picks them up, and verify.
+The installer already installed the plugin for you — it ran `claude plugin marketplace add bigbrainforge/forge-installers` and `claude plugin install forge@forge` as its last step. You do **not** type any `/plugin` commands. All that's left is to set `FORGE_MCP_URL`, load the two tokens into your environment, restart Claude Code so it picks them up, and verify.
 
 After the installer exits:
 
-1. **Load the tokens into your shell environment.** The installer appended profile lines that read `FORGE_PACKAGE_TOKEN` and `FORGE_ACCESS_TOKEN` from your secret store at shell startup — but the shell that ran the installer doesn't have them yet. Either:
+1. **Set `FORGE_MCP_URL` to your Forge server URL.** This is required — if unset, the Forge MCP server does not load when Claude Code starts (the config parse fails and the connection is never made). Add it to the same shell profile where your tokens live:
+
+   ```bash
+   # macOS/Linux — append to ~/.zshrc or ~/.bashrc
+   export FORGE_MCP_URL="https://<your-client-id>.bigbrainforge.com"
+   ```
+
+   ```powershell
+   # Windows — append to $PROFILE
+   $env:FORGE_MCP_URL = "https://<your-client-id>.bigbrainforge.com"
+   ```
+
+   Replace `<your-client-id>.bigbrainforge.com` with the server URL your BigBrain representative provided.
+
+2. **Load the tokens into your shell environment.** The installer appended profile lines that read `FORGE_PACKAGE_TOKEN` and `FORGE_ACCESS_TOKEN` from your secret store at shell startup — but the shell that ran the installer doesn't have them yet. Either:
 
    ```bash
    # macOS/Linux — open a new terminal, OR re-source the profile:
@@ -293,10 +307,10 @@ After the installer exits:
    "pkg=$($env:FORGE_PACKAGE_TOKEN.Length) access=$($env:FORGE_ACCESS_TOKEN.Length)"
    ```
 
-2. **Launch Claude Code from that shell.** Close the existing Claude Code app/CLI completely and relaunch it from the shell where the env vars are set — Claude Code inherits its environment from the process that spawned it, so launching from a stale shell will leave the plugin unable to authenticate to the MCP server. The restart also loads the plugin the installer installed (slash commands, statusline, and MCP registration).
+3. **Launch Claude Code from that shell.** Close the existing Claude Code app/CLI completely and relaunch it from the shell where the env vars are set — Claude Code inherits its environment from the process that spawned it, so launching from a stale shell will leave the plugin unable to authenticate to the MCP server. The restart also loads the plugin the installer installed (slash commands, statusline, and MCP registration).
 
-3. **Verify the plugin is active.** In Claude Code, type `/forge:help` — you should see the command list. You can also confirm the plugin shows as installed with `claude plugin list` (or under the in-app `/plugin` view), which should list `forge@forge`.
-4. **Start your first goal** with `/forge:goal "<your-objective>"`.
+4. **Verify the plugin is active.** In Claude Code, type `/forge:help` — you should see the command list. You can also confirm the plugin shows as installed with `claude plugin list` (or under the in-app `/plugin` view), which should list `forge@forge`.
+5. **Start your first goal** with `/forge:goal "<your-objective>"`.
 
    The canonical Forge flow is **`/forge:goal → /forge:review → /forge:done`**:
    - `/forge:goal` — set a verifiable objective; Claude iterates until success criteria are met.
@@ -319,14 +333,16 @@ The subcommand stamps a workflow file at `.github/workflows/atlas-reindex-on-mer
 
 ### Wire the repo secret first
 
-CI needs its own copy of `FORGE_ACCESS_TOKEN`. Per [`.forge/practices/token-isolation.md`](../../../.forge/practices/token-isolation.md), your **workstation token must not be reused for CI** — mint a separate value for the GitHub repo secret so a CI-side leak cannot compromise the developer keystore. Coordinate with your BigBrain operator to mint the second token (same `openssl rand -base64 32` provenance) and add it as a server-side principal on the Forge MCP endpoint.
+CI needs a write-plane token (`FORGE_INGEST_TOKEN`) to push the Atlas index — this is NOT the same as `FORGE_ACCESS_TOKEN` (the read-plane MCP token). Coordinate with your BigBrain operator to obtain the ingest token; on a minted client server, it is the "Ingest token" line in the mint handoff. Per [`.forge/practices/token-isolation.md`](../../../.forge/practices/token-isolation.md), **never reuse a workstation token for CI** — a CI-side leak must not compromise the developer keystore.
+
+**Indexing locally:** to run `forge atlas index --push` from a workstation, also export `FORGE_INGEST_TOKEN` (same mint-handoff value). CI re-indexing uses the repo secret of the same name instead.
 
 In your client repo on GitHub:
 
 1. **Settings → Secrets and variables → Actions → New repository secret**
-   - Name: `FORGE_ACCESS_TOKEN`
-   - Value: the CI-only bearer token (NOT the workstation value)
-   - This is a **GitHub repo secret** (encrypted at rest, exposed only to workflows that reference `secrets.FORGE_ACCESS_TOKEN`).
+   - Name: `FORGE_INGEST_TOKEN`
+   - Value: the ingest token from the mint handoff ("Ingest token" line) — NOT the `FORGE_ACCESS_TOKEN` value
+   - This is a **GitHub repo secret** (encrypted at rest, exposed only to workflows that reference `secrets.FORGE_INGEST_TOKEN`).
 
 2. **Settings → Secrets and variables → Actions → New repository secret** (second secret)
    - Name: `FORGE_PACKAGE_TOKEN`
@@ -336,8 +352,8 @@ In your client repo on GitHub:
 
 3. **Settings → Secrets and variables → Actions → Variables tab → New repository variable** (optional)
    - Name: `FORGE_MCP_URL`
-   - Value: your MCP endpoint, e.g. `https://forge-mcp.bigbrainforge.com`
-   - Leave it unset to accept the workflow default of `https://mcp.bigbrainforge.com`. This is a **variable**, not a secret — the URL is not sensitive, and putting it in the variables tab keeps it visible in the Actions UI for debugging.
+   - Value: your MCP endpoint, e.g. `https://<your-client-id>.bigbrainforge.com`
+   - Set this to your client's Forge server URL (e.g. `https://<your-client-id>.bigbrainforge.com`) — the same URL provided in your onboarding handoff. The workflow has no default; the indexing step will fail without this variable. This is a **variable**, not a secret — the URL is not sensitive, and putting it in the variables tab keeps it visible in the Actions UI for debugging.
 
 ### Step-by-step
 
@@ -443,13 +459,14 @@ Replace `Platform - AI - FORGE` with your vault name. The auto-installer's `--se
 
 ### 5.3 Configure `~/.npmrc`
 
-Append these three lines to `~/.npmrc` (path is `%USERPROFILE%\.npmrc` on Windows):
+Append these two lines to `~/.npmrc` (path is `%USERPROFILE%\.npmrc` on Windows):
 
 ```
 @bigbrainforge:registry=https://npm.pkg.github.com
 //npm.pkg.github.com/:_authToken=${FORGE_PACKAGE_TOKEN}
-always-auth=true
 ```
+
+Do not add `always-auth=true` — npm 11 removed the key, and a `~/.npmrc` still carrying it prints an "Unknown user config" warning on every npm command. The scoped registry line plus the per-host `_authToken` line are all the auth npm needs. If an older install wrote it, delete that line.
 
 ### 5.4 Store FORGE_ACCESS_TOKEN
 
@@ -533,7 +550,7 @@ gcloud secrets versions access latest --secret=FORGE_PACKAGE_TOKEN --project=YOU
 
 ### MCP server errors inside Claude Code
 
-The plugin registers `forge-mcp` in Claude Code's MCP config with a bearer header that interpolates `${FORGE_ACCESS_TOKEN}` at Claude Code startup. If you see auth errors in slash-command output:
+The plugin registers the `forge` MCP server in Claude Code's MCP config with a bearer header that interpolates `${FORGE_ACCESS_TOKEN}` at Claude Code startup. If you see auth errors in slash-command output:
 
 ```bash
 # macOS/Linux
@@ -724,4 +741,4 @@ The 1Password backend reduces engineer onboarding to "add to vault → run insta
 - **Plugin / slash-command issues:** include the full command + output.
 - **Security concerns:** email security@bigbrainforge.com — do not file as public GitHub issues.
 
-<!-- forge release: forge-v3.5.0 -->
+<!-- forge release: forge-v3.6.0 -->
